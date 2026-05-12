@@ -12,7 +12,7 @@ import os
 workspace_dir = os.getenv("WORKSPACE_DIR", _default_path)
 sys.path.insert(0, workspace_dir)
 
-from data_platform_api import DataPlatformClient
+from src.data_platform_api import DataPlatformClient
 
 client = DataPlatformClient(
     base_url='https://proxy-service-http-cnbj1-dp.api.xiaomi.net',

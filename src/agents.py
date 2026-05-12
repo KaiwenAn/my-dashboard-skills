@@ -11,7 +11,11 @@ Agent 模块：加载 System Prompt 并执行 Agent
 import os
 import json
 from enum import Enum
-from llm import LLMClient
+from .llm import LLMClient
+from utils.logging_config import get_logger
+
+# 模块级 logger
+logger = get_logger(__name__)
 
 
 class RunMode(Enum):
@@ -43,8 +47,8 @@ AGENT_PROMPT_FILES = {
     "solution_generator": "solution-generator-agent",
 }
 
-# System Prompt 文件所在目录
-PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
+# System Prompt 文件所在目录（项目根目录的 prompts/）
+PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
 
 def load_prompt(agent_name: str) -> str:
@@ -111,12 +115,10 @@ class BaseAgent:
         Raises:
             ValueError: 输出校验失败
         """
-        print(f"\n{'='*60}")
-        print(f"🤖 执行 Agent: {self.agent_name}")
-        print(f"{'='*60}")
+        logger.info(f"执行 Agent: {self.agent_name}")
 
         user_message = self.build_user_message(context)
-        print(f"  📥 输入长度: {len(user_message)} 字符")
+        logger.debug(f"  输入长度: {len(user_message)} 字符")
 
         output = self.llm.chat_json(
             system_prompt=self.system_prompt,
@@ -125,7 +127,7 @@ class BaseAgent:
         )
 
         self.validate_output(output)
-        print(f"  ✅ 输出校验通过")
+        logger.debug(f"  输出校验通过")
 
         return output
 
@@ -307,7 +309,7 @@ class SemanticModelAgent(BaseAgent):
         try:
             from data_platform_api import DataPlatformClient, SQLExecutionError
         except ImportError:
-            print("  ⚠️ 未找到 data_platform_api 模块，跳过试跑")
+            logger.warning("未找到 data_platform_api 模块，跳过试跑")
             return super().run(context)
 
         # 从context中获取数据平台配置
@@ -320,14 +322,14 @@ class SemanticModelAgent(BaseAgent):
         engine = dp_config.get("engine", "Presto")
 
         if not token:
-            print("  ⚠️ 未配置数据平台token，跳过试跑")
+            logger.warning("未配置数据平台token，跳过试跑")
             return super().run(context)
 
         # 创建DataPlatformClient实例
         try:
             client = DataPlatformClient(base_url, token, catalog, schema, engine)
         except Exception as e:
-            print(f"  ⚠️ 创建数据平台客户端失败：{e}，跳过试跑")
+            logger.warning(f"创建数据平台客户端失败：{e}，跳过试跑")
             return super().run(context)
 
         # 自动拉取用户指定表的真实字段（仅在不启用试跑时也需要）
@@ -352,22 +354,18 @@ class SemanticModelAgent(BaseAgent):
                 # 注入试跑错误信息（让LLM修正SQL）
                 if last_error and retry_count >= 1:
                     context["_sql_test_error"] = last_error
-                    print(f"  📝 注入试跑错误信息到LLM输入")
+                    logger.debug(f"注入试跑错误信息到LLM输入")
 
                 try:
                     # 调用父类方法生成SQL
-                    print(f"\n  🤖 生成语义模型SQL（尝试 {retry_count + 1}/{max_retry}）")
+                    logger.info(f"生成语义模型SQL（尝试 {retry_count + 1}/{max_retry}）")
                     output = super().run(context)
 
                     # 打印生成的完整SQL（调试用）
                     for m in output.get("semantic_models", []):
                         model_name = m.get("model_name", "?")
                         sql = m.get("sql", "")
-                        print(f"\n  📝 模型 [{model_name}] 完整SQL：")
-                        print(f"  {'─'*50}")
-                        for line in sql.strip().split("\n"):
-                            print(f"    {line}")
-                        print(f"  {'─'*50}\n")
+                        logger.debug(f"\n模型 [{model_name}] 完整SQL：\n{sql}")
 
                 finally:
                     # 清除注入的错误信息（避免影响其他Agent）
@@ -375,22 +373,22 @@ class SemanticModelAgent(BaseAgent):
                         del context["_sql_test_error"]
 
             # 并行试跑所有语义模型的SQL
-            print(f"  🔄 试跑SQL（尝试 {retry_count + 1}/{max_retry}）...")
+            logger.info(f"试跑SQL（尝试 {retry_count + 1}/{max_retry}）...")
             test_results = self._test_sql_parallel(client, output["semantic_models"])
             failed = [r for r in test_results if not r["success"]]
 
             if not failed:
-                print(f"  ✅ SQL试跑全部通过")
+                logger.info(f"SQL试跑全部通过")
                 return output  # 试跑通过，返回结果
 
             # 试跑失败
             retry_count += 1
             last_error = self._format_test_errors(failed)
 
-            print(f"  ⚠️ SQL试跑失败（{retry_count}/{max_retry}）：{len(failed)} 个模型试跑失败")
+            logger.warning(f"SQL试跑失败（{retry_count}/{max_retry}）：{len(failed)} 个模型试跑失败")
             for f in failed:
                 error_msg = f['error']['message'] if f.get('error') else '未知错误'
-                print(f"    - {f['model_name']}: {error_msg}")
+                logger.warning(f"  - {f['model_name']}: {error_msg}")
 
             if retry_count >= max_retry:
                 # 已达最大重试次数
@@ -399,11 +397,11 @@ class SemanticModelAgent(BaseAgent):
 
             if retry_count == 1:
                 # 第1次失败：直接重试（不重新生成SQL）
-                print(f"  🔄 第1次失败，直接重试相同SQL（可能是临时资源问题）")
+                logger.info(f"第1次失败，直接重试相同SQL（可能是临时资源问题）")
                 # output 保持不变，下次循环会使用相同的SQL试跑
             else:
                 # 第2-3次失败：重新生成SQL
-                print(f"  🔄 第{retry_count}次失败，重新生成SQL...")
+                logger.info(f"第{retry_count}次失败，重新生成SQL...")
                 output = None  # 重置output，下次循环会重新生成SQL
 
         # 不应该到达这里
@@ -424,7 +422,7 @@ class SemanticModelAgent(BaseAgent):
         data_sources = user_input.get("data_sources", [])
 
         if not data_sources:
-            print("  📋 未找到 data_sources，跳过自动字段拉取")
+            logger.debug("未找到 data_sources，跳过自动字段拉取")
             return
 
         column_types = {}
@@ -439,13 +437,13 @@ class SemanticModelAgent(BaseAgent):
             field_mappings = ds.get("field_mappings", {})
             field_descriptions = ds.get("field_descriptions", {})
 
-            print(f"  🔍 正在获取表 [{table_name}] 的字段信息...")
+            logger.debug(f"正在获取表 [{table_name}] 的字段信息...")
 
             try:
                 columns = client.describe_table(table_name)
 
                 if not columns:
-                    print(f"  ⚠️ 表 [{table_name}] 未获取到字段信息，尝试 SELECT * LIMIT 1")
+                    logger.warning(f"表 [{table_name}] 未获取到字段信息，尝试备用查询")
                     # describe_table 失败时，尝试用 DESCRIBE 备用语法
                     columns = self._describe_table_fallback(client, table_name)
 
@@ -469,25 +467,25 @@ class SemanticModelAgent(BaseAgent):
                             table_info[col_name]["is_key_field"] = True
 
                     column_types[table_name] = table_info
-                    print(f"  ✅ 表 [{table_name}] 获取到 {len(table_info)} 个字段")
+                    logger.info(f"表 [{table_name}] 获取到 {len(table_info)} 个字段")
                 else:
-                    print(f"  ⚠️ 表 [{table_name}] 字段获取失败")
+                    logger.warning(f"表 [{table_name}] 字段获取失败")
 
             except Exception as e:
-                print(f"  ⚠️ 获取表 [{table_name}] 字段失败：{e}")
+                logger.warning(f"获取表 [{table_name}] 字段失败：{e}")
 
         # 将 column_types 注入到 context 中，供语义模型 Agent 使用
         if column_types:
             context["column_types"] = column_types
-            print(f"\n  📊 已自动拉取 {len(column_types)} 个表的字段信息，已注入到 context")
+            logger.info(f"已自动拉取 {len(column_types)} 个表的字段信息，已注入到 context")
 
             # 打印字段摘要（便于调试）
             for tname, fields in column_types.items():
                 key_fields_in_table = [f for f, info in fields.items() if info.get("is_key_field")]
                 if key_fields_in_table:
-                    print(f"     - {tname}: {len(fields)} 个字段（含关键字段: {', '.join(key_fields_in_table)}）")
+                    logger.debug(f"     - {tname}: {len(fields)} 个字段（含关键字段: {', '.join(key_fields_in_table)}）")
                 else:
-                    print(f"     - {tname}: {len(fields)} 个字段")
+                    logger.debug(f"     - {tname}: {len(fields)} 个字段")
 
     def _describe_table_fallback(self, client, table_name: str) -> list:
         """
@@ -753,12 +751,10 @@ class SolutionGeneratorAgent(BaseAgent):
         Returns:
             Markdown 格式的搭建方案文档
         """
-        print(f"\n{'='*60}")
-        print(f"🤖 执行 Agent: {self.agent_name}")
-        print(f"{'='*60}")
+        logger.info(f"执行 Agent: {self.agent_name}")
 
         user_message = self.build_user_message(context)
-        print(f"  📥 输入长度: {len(user_message)} 字符")
+        logger.debug(f"  输入长度: {len(user_message)} 字符")
 
         # 方案生成 Agent 用 chat 而非 chat_json，因为输出是 Markdown
         raw_output = self.llm.chat(
@@ -768,7 +764,7 @@ class SolutionGeneratorAgent(BaseAgent):
             max_tokens=16384,  # Markdown 文档通常较长
         )
 
-        print(f"  ✅ 方案生成完成，文档长度: {len(raw_output)} 字符")
+        logger.info(f"方案生成完成，文档长度: {len(raw_output)} 字符")
         return raw_output
 
 
@@ -808,9 +804,7 @@ class BIPushAgent(BaseAgent):
                 "errors": [{"model_name": ..., "error": ...}, ...],
             }
         """
-        print(f"\n{'='*60}")
-        print(f"🤖 执行 Agent: {self.agent_name}")
-        print(f"{'='*60}")
+        logger.info(f"执行 Agent: {self.agent_name}")
 
         try:
             # 1. 提取 bi_config
@@ -819,7 +813,7 @@ class BIPushAgent(BaseAgent):
 
             # 2. 若无 bi_config，跳过
             if not bi_config:
-                print("  ⚠️ BI 推送跳过：bi_config 未配置")
+                logger.warning("BI 推送跳过：bi_config 未配置")
                 return {
                     "skipped": True,
                     "reason": "bi_config 未配置，请在 BI 配置中填写工场空间 ID 和操作人",
@@ -828,7 +822,7 @@ class BIPushAgent(BaseAgent):
             # 3. 校验 bi_config
             config_error = validate_bi_config(bi_config)
             if config_error:
-                print(f"  ⚠️ BI 推送跳过：{config_error}")
+                logger.warning(f"BI 推送跳过：{config_error}")
                 return {
                     "skipped": True,
                     "reason": config_error,
@@ -840,7 +834,7 @@ class BIPushAgent(BaseAgent):
             # 5. 校验语义模型输出完整性
             output_error = validate_publish_mode_output(sm_output)
             if output_error:
-                print(f"  ⚠️ BI 推送跳过：语义模型输出不完整 - {output_error}")
+                logger.warning(f"BI 推送跳过：语义模型输出不完整 - {output_error}")
                 return {
                     "skipped": True,
                     "reason": f"语义模型输出不完整：{output_error}",
@@ -852,7 +846,7 @@ class BIPushAgent(BaseAgent):
             space_id = bi_config["space_id"]
             creator = bi_config["creator"]
             base_url = bi_config.get("base_url", "")
-            print(f"  🔗 正在获取数据源ID: user={creator}, spaceId={space_id}...")
+            logger.info(f"正在获取数据源ID: user={creator}, spaceId={space_id}...")
 
             datasource_id = BIClient.get_datasource_id(
                 user=creator,
@@ -866,7 +860,7 @@ class BIPushAgent(BaseAgent):
             # 7. 调用 BI API 批量推送
 
             model_count = len(sm_output.get("semantic_models", []))
-            print(f"  🔄 正在推送 {model_count} 个语义模型到 BI 平台...")
+            logger.info(f"正在推送 {model_count} 个语义模型到 BI 平台...")
 
             push_result = create_and_publish_all(
                 bi_config=bi_config_for_api,
@@ -875,11 +869,11 @@ class BIPushAgent(BaseAgent):
 
             # 8. 打印结果摘要
             if push_result["errors"]:
-                print(f"  ⚠️ 推送完成，{len(push_result['errors'])} 个模型失败：")
+                logger.warning(f"推送完成，{len(push_result['errors'])} 个模型失败：")
                 for err in push_result["errors"]:
-                    print(f"     - {err['model_name']}: {err['error']}")
+                    logger.warning(f"     - {err['model_name']}: {err['error']}")
             else:
-                print(f"  ✅ 推送完成：{push_result['total']} 个语义模型全部成功")
+                logger.info(f"推送完成：{push_result['total']} 个语义模型全部成功")
 
             return {
                 "skipped": False,
@@ -887,7 +881,7 @@ class BIPushAgent(BaseAgent):
             }
 
         except Exception as e:
-            print(f"  ⚠️ BI 推送异常：{e}")
+            logger.error(f"BI 推送异常：{e}")
             return {
                 "skipped": False,
                 "error": str(e),

@@ -42,13 +42,30 @@ WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", _default_workspace))
 sys.path.insert(0, str(WORKSPACE_DIR))
 
 try:
-    from llm import LLMClient
-    from pipeline import Pipeline
-    from agents import RunMode
+    from src.llm import LLMClient
+    from src.pipeline import Pipeline
+    from src.agents import RunMode
 except ImportError as e:
     print(f"[WARN] 无法导入依赖模块: {e}")
     print(f"请确保工作空间 ({WORKSPACE_DIR}) 包含完整的 Agent 实现")
     sys.exit(1)
+
+# Logger 初始化（延迟导入避免循环）
+logger = None
+
+
+def _init_logger():
+    global logger
+    if logger is not None:
+        return
+    try:
+        from utils.logging_config import get_logger, setup_logging
+        setup_logging()
+        logger = get_logger(__name__)
+    except Exception:
+        import logging
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        logger = logging.getLogger(__name__)
 
 
 def load_config():
@@ -62,6 +79,7 @@ def load_config():
 
 def save_outputs(output_dir: Path, pipeline_result):
     """保存Pipeline输出到文件"""
+    _init_logger()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 保存方案文档
@@ -70,7 +88,7 @@ def save_outputs(output_dir: Path, pipeline_result):
             pipeline_result.solution_document,
             encoding="utf-8"
         )
-        print(f"  [SAVE] 方案文档已保存: {output_dir / 'solution.md'}")
+        logger.info(f"方案文档已保存: {output_dir / 'solution.md'}")
 
     # 保存HTML版本
     if pipeline_result.html_document:
@@ -78,7 +96,7 @@ def save_outputs(output_dir: Path, pipeline_result):
             pipeline_result.html_document,
             encoding="utf-8"
         )
-        print(f"  [HTML] HTML版本已保存: {output_dir / 'solution.html'}")
+        logger.info(f"HTML版本已保存: {output_dir / 'solution.html'}")
 
     # 保存Agent中间输出
     agent_outputs_dir = output_dir / "agent_outputs"
@@ -111,7 +129,7 @@ def save_outputs(output_dir: Path, pipeline_result):
                     json.dumps(output, ensure_ascii=False, indent=2),
                     encoding="utf-8"
                 )
-            print(f"  [AGENT] {name} 输出已保存: {output_file}")
+            logger.info(f"  {name} 输出已保存: {output_file}")
 
     # 保存确认项
     if pipeline_result.all_confirmation_items:
@@ -136,10 +154,12 @@ def save_outputs(output_dir: Path, pipeline_result):
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
-    print(f"  [SUMMARY] 执行摘要已保存: {output_dir / 'execution_summary.json'}")
+    logger.info(f"执行摘要已保存: {output_dir / 'execution_summary.json'}")
 
 
 def main():
+    _init_logger()
+
     parser = argparse.ArgumentParser(description="看板开发 Agent Pipeline")
     parser.add_argument("--input", "-i", help="需求JSON文件路径（原有方式）")
     parser.add_argument("--output", "-o", default="./output", help="输出目录")
@@ -158,10 +178,8 @@ def main():
     if args.natural_input:
         # 模式1：命令行自然语言输入
         input_source = "自然语言输入"
-        print(f"\n{'#'*60}")
-        print(f"[MODE] 自然语言输入模式")
-        print(f"  [INPUT] {args.natural_input[:80]}...")
-        print(f"{'#'*60}\n")
+        logger.info(f"自然语言输入模式")
+        logger.debug(f"  [INPUT] {args.natural_input[:80]}...")
 
         # 使用NLConverter转换
         from nl_converter import NLConverter
@@ -183,10 +201,8 @@ def main():
         with open(input_path, "r", encoding="utf-8") as f:
             natural_language = f.read()
 
-        print(f"\n{'#'*60}")
-        print(f"[MODE] 自然语言文件输入模式")
-        print(f"  [INPUT] {input_path}")
-        print(f"{'#'*60}\n")
+        logger.info(f"自然语言文件输入模式")
+        logger.debug(f"  [INPUT] {input_path}")
 
         # 使用NLConverter转换
         from nl_converter import NLConverter
@@ -217,11 +233,8 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    print(f"\n{'#'*60}")
-    print(f"[START] 启动看板开发 Agent Pipeline")
-    print(f"  [INPUT] 输入: {input_source}")
-    print(f"  [OUTPUT] 输出: {args.output}")
-    print(f"{'#'*60}\n")
+    logger.info(f"启动看板开发 Agent Pipeline")
+    logger.info(f"  输入: {input_source}, 输出: {args.output}")
 
     # 加载配置（配置文件优先于环境变量）
     config = load_config()
@@ -327,7 +340,7 @@ def main():
     user_input.pop("_mode_hint", None)
 
     run_mode = RunMode.PUBLISH if user_input.get("bi_config") else RunMode.PLAN
-    print(f"[MODE] 运行模式: {run_mode.name}（来源：{mode_source}）")
+    logger.info(f"运行模式: {run_mode.name}（来源：{mode_source}）")
 
     # ---- SQL 校验开关（三级优先级） ----
     # 优先级（高→低）：user_input["enable_sql_test"] > --no-sql-test / NLConverter 关键词 > config.json sql_validation
@@ -359,7 +372,7 @@ def main():
 
     # 写入最终值到 user_input（Pipeline 会从这里读取）
     user_input["enable_sql_test"] = enable_sql_test_final
-    print(f"[SQL_TEST] SQL校验: {'启用' if enable_sql_test_final else '跳过'}（来源：{sql_test_source}）")
+    logger.info(f"SQL校验: {'启用' if enable_sql_test_final else '跳过'}（来源：{sql_test_source}）")
 
     pipeline = Pipeline(
         model_config=model_config,
@@ -371,7 +384,7 @@ def main():
     try:
         result = pipeline.run(user_input)
     except Exception as e:
-        print(f"\n❌ Pipeline 执行失败: {e}")
+        logger.error(f"Pipeline 执行失败: {e}")
         sys.exit(1)
 
     # 保存输出
@@ -380,12 +393,10 @@ def main():
 
     # 打印结果摘要
     duration_min = result.total_duration_ms / 60000
-    print(f"\n{'#'*60}")
-    print(f"[DONE] Pipeline 完成!")
-    print(f"  总耗时: {duration_min:.1f} 分钟")
-    print(f"  确认项: {len(result.all_confirmation_items)} 项")
-    print(f"  输出目录: {output_dir.absolute()}")
-    print(f"{'#'*60}")
+    logger.info(f"Pipeline 完成!")
+    logger.info(f"  总耗时: {duration_min:.1f} 分钟")
+    logger.info(f"  确认项: {len(result.all_confirmation_items)} 项")
+    logger.info(f"  输出目录: {output_dir.absolute()}")
 
 
 if __name__ == "__main__":

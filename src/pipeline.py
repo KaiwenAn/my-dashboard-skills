@@ -13,10 +13,14 @@ import sys
 import time
 import traceback  # 用于打印完整错误信息
 from dataclasses import dataclass, field
-from llm import LLMClient
-from agents import AGENTS, PIPELINE_ORDER, load_prompt, cross_validate_requirements
-from agents import RunMode
-from renderer import render_html_report
+from .llm import LLMClient
+from .agents import AGENTS, PIPELINE_ORDER, load_prompt, cross_validate_requirements
+from .agents import RunMode
+from .renderer import render_html_report
+from utils.logging_config import get_logger
+
+# 模块级 logger
+logger = get_logger(__name__)
 
 # Windows GBK 兼容
 if sys.platform == "win32":
@@ -145,9 +149,7 @@ class Pipeline:
         """
         pipeline_id = f"pipe_{int(time.time())}"
         start_time = time.time()  # ⏱️ 开始计时
-        print(f"\n{'#'*60}")
-        print(f"🚀 启动 Pipeline: {pipeline_id}")
-        print(f"{'#'*60}")
+        logger.info(f"启动 Pipeline: {pipeline_id}")
 
         self.context["user_input"] = user_input
         self._confirmation_items_buffer = []
@@ -198,7 +200,7 @@ class Pipeline:
 
             # ⏱️ 打印Step耗时
             duration_s = step_duration / 1000
-            print(f"  ⏱️ {self.AGENT_DISPLAY_NAMES.get(agent_name, agent_name)} 耗时: {duration_s:.1f}s")
+            logger.info(f"{self.AGENT_DISPLAY_NAMES.get(agent_name, agent_name)} 耗时: {duration_s:.1f}s")
 
             if step_result.status == "failed":
                 # 推送 pipeline_error 事件
@@ -236,9 +238,9 @@ class Pipeline:
                     step_result.output, user_input
                 )
                 if warnings:
-                    print(f"  ⚠️ 交叉校验发现 {len(warnings)} 个警告：", flush=True)
+                    logger.warning(f"交叉校验发现 {len(warnings)} 个警告：")
                     for w in warnings:
-                        print(f"    - {w}", flush=True)
+                        logger.warning(f"  - {w}")
                     # 将警告注入到语义模型 Agent 的 context
                     self.context["_cross_validate_warnings"] = warnings
 
@@ -255,9 +257,9 @@ class Pipeline:
             try:
                 dashboard_title = user_input.get("dashboard_meta", {}).get("title", "")
                 html_doc = render_html_report(solution_doc, dashboard_title)
-                print(f"  🎨 HTML 报告渲染完成", flush=True)
+                logger.info(f"HTML 报告渲染完成")
             except Exception as e:
-                print(f"  ⚠️ HTML 报告渲染失败（不影响 Markdown 输出）: {e}", flush=True)
+                logger.warning(f"HTML 报告渲染失败（不影响 Markdown 输出）: {e}")
                 html_doc = ""
 
         # ⏱️ 计算总耗时
@@ -265,20 +267,17 @@ class Pipeline:
         total_duration_min = total_duration_ms / 60000
         step_durations = {s.agent_name: s.duration_ms for s in self.steps}
 
-        print(f"\n{'#'*60}", flush=True)
-        print(f"✅ Pipeline 完成: {pipeline_id}", flush=True)
-        print(f"⏱️ 总耗时: {total_duration_ms/1000:.1f}s ({total_duration_min:.1f}min)", flush=True)
-        print(f"{'#'*60}", flush=True)
+        logger.info(f"Pipeline 完成: {pipeline_id}")
+        logger.info(f"总耗时: {total_duration_ms/1000:.1f}s ({total_duration_min:.1f}min)")
 
         # ⏱️ 打印每个Step的耗时和占比
-        print(f"\n📊 耗时分析：", flush=True)
+        logger.info(f"耗时分析：")
         for step in self.steps:
             step_duration_s = step.duration_ms / 1000
             percentage = (step.duration_ms / total_duration_ms) * 100 if total_duration_ms > 0 else 0
             retry_info = f" (重试{step.retry_count}次)" if step.retry_count > 0 else ""
-            print(f"  - {self.AGENT_DISPLAY_NAMES.get(step.agent_name, step.agent_name)}: "
-                  f"{step_duration_s:.1f}s ({percentage:.1f}%){retry_info}", flush=True)
-        print("", flush=True)
+            logger.info(f"  - {self.AGENT_DISPLAY_NAMES.get(step.agent_name, step.agent_name)}: "
+                  f"{step_duration_s:.1f}s ({percentage:.1f}%){retry_info}")
 
         # 推送 pipeline_done 事件
         self._emit("pipeline_done", {
@@ -357,7 +356,7 @@ class Pipeline:
 
             except ValueError as e:
                 last_error = str(e)
-                print(f"  ⚠️ 第 {attempt} 次尝试失败: {e}")
+                logger.warning(f"第 {attempt} 次尝试失败: {e}")
                 # 推送重试事件
                 self._emit("step_retry", {
                     "agent_name": agent_name,
@@ -367,17 +366,16 @@ class Pipeline:
                     "error": str(e),
                 })
                 if attempt < self.MAX_RETRY:
-                    print(f"  🔄 重试中... ({attempt}/{self.MAX_RETRY})")
+                    logger.info(f"重试中... ({attempt}/{self.MAX_RETRY})")
                     # 重试时在 context 中追加错误提示
                     self.context[f"_retry_hint_{agent_name}"] = f"上次输出校验失败：{e}"
                 else:
-                    print(f"  ❌ 已达最大重试次数，放弃")
+                    logger.error(f"已达最大重试次数，放弃")
 
             except Exception as e:
                 last_error = str(e)
-                print(f"  ❌ 未预期的错误: {e}")
-                print(f"  📋 完整错误信息：")
-                traceback.print_exc()  # 打印完整错误堆栈
+                logger.error(f"未预期的错误: {e}")
+                logger.debug(f"完整错误信息：{traceback.format_exc()}")
                 self._emit("step_retry", {
                     "agent_name": agent_name,
                     "display_name": self.AGENT_DISPLAY_NAMES.get(agent_name, agent_name),
@@ -387,10 +385,10 @@ class Pipeline:
                     "traceback": traceback.format_exc(),  # 也把traceback传给前端
                 })
                 if attempt < self.MAX_RETRY:
-                    print(f"  🔄 重试中... ({attempt}/{self.MAX_RETRY})")
+                    logger.info(f"重试中... ({attempt}/{self.MAX_RETRY})")
                     self.context[f"_retry_hint_{agent_name}"] = f"上次执行异常：{e}"
                 else:
-                    print(f"  ❌ 已达最大重试次数，放弃")
+                    logger.error(f"已达最大重试次数，放弃")
 
         return StepResult(
             step_id=step_id,
@@ -492,15 +490,13 @@ class Pipeline:
         self._run_mode = run_mode
         pipeline_id = f"pipe_{int(time.time())}_rev"
         start_time = time.time()
-        print(f"\n{'#'*60}", flush=True)
-        print(f"🔄 启动局部重新生成: {pipeline_id}", flush=True)
-        print(f"   从 {start_agent} 开始，模式: {run_mode.value}", flush=True)
-        print(f"{'#'*60}", flush=True)
+        logger.info(f"启动局部重新生成: {pipeline_id}")
+        logger.info(f"从 {start_agent} 开始，模式: {run_mode.value}")
 
         # 注入修改意见到context
         if revision_context:
             context["_revision_context"] = revision_context
-            print(f"  📝 修改意见: {revision_context.get('user_feedback', '')}")
+            logger.debug(f"修改意见: {revision_context.get('user_feedback', '')}")
 
         self.context = context
         self._confirmation_items_buffer = []
@@ -565,9 +561,9 @@ class Pipeline:
                     step_result.output, self.context.get("user_input", {})
                 )
                 if warnings:
-                    print(f"  ⚠️ 交叉校验发现 {len(warnings)} 个警告：")
+                    logger.warning(f"交叉校验发现 {len(warnings)} 个警告：")
                     for w in warnings:
-                        print(f"    - {w}")
+                        logger.warning(f"  - {w}")
                     self.context["_cross_validate_warnings"] = warnings
 
         # 合并所有确认项
@@ -584,18 +580,16 @@ class Pipeline:
                     "dashboard_meta", {}
                 ).get("title", "")
                 html_doc = render_html_report(solution_doc, dashboard_title)
-                print(f"  🎨 HTML 报告渲染完成", flush=True)
+                logger.info(f"HTML 报告渲染完成")
             except Exception as e:
-                print(f"  ⚠️ HTML 报告渲染失败（不影响 Markdown 输出）: {e}", flush=True)
+                logger.warning(f"HTML 报告渲染失败（不影响 Markdown 输出）: {e}")
                 html_doc = ""
 
         # 计算耗时
         total_duration_ms = int((time.time() - start_time) * 1000)
         step_durations = {s.agent_name: s.duration_ms for s in self.steps}
 
-        print(f"\n{'#'*60}", flush=True)
-        print(f"✅ 局部重新生成完成: {pipeline_id}", flush=True)
-        print(f"{'#'*60}", flush=True)
+        logger.info(f"局部重新生成完成: {pipeline_id}")
 
         self._emit("pipeline_done", {
             "pipeline_id": pipeline_id,

@@ -16,6 +16,7 @@ import os
 import json
 import re
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -28,14 +29,32 @@ _default_workspace = str(Path.home() / "WorkBuddy" / "20260427134240")
 WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", _default_workspace))
 
 # 尝试从工作空间加载依赖模块
-import sys
 sys.path.insert(0, str(WORKSPACE_DIR))
 
 try:
-    from data_platform_api import DataPlatformClient
+    from src.data_platform_api import DataPlatformClient
 except ImportError as e:
     print(f"[WARN] 无法导入 data_platform_api: {e}")
     DataPlatformClient = None
+
+# Logger
+logger = None
+
+
+def _init_logger():
+    """延迟初始化 logger（避免导入顺序问题）"""
+    global logger
+    if logger is not None:
+        return
+    try:
+        sys.path.insert(0, str(SKILL_ROOT))
+        from utils.logging_config import get_logger, setup_logging
+        setup_logging()
+        logger = get_logger(__name__)
+    except Exception:
+        import logging
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        logger = logging.getLogger(__name__)
 
 
 def load_config():
@@ -132,36 +151,35 @@ class NLConverter:
         Returns:
             符合现有输入规范的结构化JSON
         """
-        print(f"\n{'='*60}")
-        print("[NLConverter] 开始转换自然语言输入...")
-        print(f"  输入: {natural_language[:100]}...")
-        print(f"{'='*60}\n")
+        _init_logger()
+        logger.info("开始转换自然语言输入...")
+        logger.debug(f"  输入: {natural_language[:100]}...")
 
         # Step 1: 使用LLM从自然语言中提取基本信息
-        print("[Step 1/5] 提取看板元信息...")
+        logger.info("[Step 1/5] 提取看板元信息...")
         meta_info = self._extract_meta_info(natural_language)
 
         # Step 2: 提取数据源表名
-        print("[Step 2/5] 提取数据源表名...")
+        logger.info("[Step 2/5] 提取数据源表名...")
         table_names = self._extract_table_names(natural_language, meta_info)
 
         # Step 3: 获取表字段信息
-        print("[Step 3/5] 获取表字段信息...")
+        logger.info("[Step 3/5] 获取表字段信息...")
         data_sources = self._fetch_table_info(table_names, natural_language)
 
         # Step 3.5: 推断多表关联关系（仅 >= 2 张表时）
         join_hints = []
         join_confirmations = []
         if len(data_sources) >= 2:
-            print("[Step 3.5/5] 推断多表关联关系...")
+            logger.info("[Step 3.5/5] 推断多表关联关系...")
             join_hints, join_confirmations = self._infer_join_hints(
                 data_sources, natural_language, meta_info
             )
         else:
-            print("[Step 3.5/5] 单表场景，跳过关联推断")
+            logger.debug("[Step 3.5/5] 单表场景，跳过关联推断")
 
         # Step 4: 推断指标和维度
-        print("[Step 4/5] 推断指标和维度...")
+        logger.info("[Step 4/5] 推断指标和维度...")
         metrics, dimensions, confirmation_items = self._infer_metrics_and_dimensions(
             natural_language, meta_info, data_sources
         )
@@ -179,23 +197,19 @@ class NLConverter:
         mode_hint = self._detect_mode_hint(natural_language)
         if mode_hint:
             result["_mode_hint"] = mode_hint
-            print(f"  [MODE] 检测到模式关键词: {mode_hint}")
+            logger.debug(f"  [MODE] 检测到模式关键词: {mode_hint}")
 
         # 检测自然语言中的 SQL 校验关键词
         sql_test_hint = self._detect_sql_test_hint(natural_language)
         if sql_test_hint is not None:
             result["_sql_test_hint"] = sql_test_hint
-            print(f"  [SQL_TEST] 检测到SQL校验关键词: enable={sql_test_hint}")
+            logger.debug(f"  [SQL_TEST] 检测到SQL校验关键词: enable={sql_test_hint}")
 
-        print(f"\n{'='*60}")
-        print("[NLConverter] 转换完成!")
-        print(f"  看板标题: {result['dashboard_meta']['title']}")
-        print(f"  数据源: {len(result['data_sources'])} 张表")
-        print(f"  关联关系: {len(join_hints)} 组")
-        print(f"  指标: {len(result['metrics_requirement'])} 个")
-        print(f"  维度: {len(result['dimensions_requirement'])} 个")
-        print(f"  确认项: {len(result.get('confirmation_items', []))} 项")
-        print(f"{'='*60}\n")
+        logger.info("[NLConverter] 转换完成!")
+        logger.info(f"  看板标题: {result['dashboard_meta']['title']}")
+        logger.info(f"  数据源: {len(result['data_sources'])} 张表, 关联关系: {len(join_hints)} 组")
+        logger.info(f"  指标: {len(result['metrics_requirement'])} 个, 维度: {len(result['dimensions_requirement'])} 个")
+        logger.info(f"  确认项: {len(result.get('confirmation_items', []))} 项")
 
         return result
 
@@ -292,7 +306,7 @@ class NLConverter:
                 raise ValueError("LLM返回内容无法解析为JSON")
 
         except Exception as e:
-            print(f"  [WARN] LLM提取元信息失败: {e}，使用规则提取")
+            logger.warning(f"LLM提取元信息失败: {e}，使用规则提取")
             return self._extract_meta_info_fallback(text)
 
     def _extract_meta_info_fallback(self, text: str) -> Dict[str, Any]:
@@ -349,7 +363,7 @@ class NLConverter:
                     if full_name not in table_names:
                         table_names.append(full_name)
 
-        print(f"  提取到 {len(table_names)} 张表: {table_names}")
+        logger.debug(f"  提取到 {len(table_names)} 张表: {table_names}")
         return table_names
 
     def _fetch_table_info(self, table_names: List[str], user_input: str) -> List[Dict[str, Any]]:
@@ -366,7 +380,7 @@ class NLConverter:
         data_sources = []
 
         for table_name in table_names:
-            print(f"  正在获取表 {table_name} 的字段信息...")
+            logger.info(f"  正在获取表 {table_name} 的字段信息...")
 
             data_source = {
                 "table_name": table_name,
@@ -381,7 +395,7 @@ class NLConverter:
             if self.dp_client:
                 try:
                     columns = self.dp_client.describe_table(table_name)
-                    print(f"    ✓ 获取到 {len(columns)} 个字段")
+                    logger.info(f"    获取到 {len(columns)} 个字段")
 
                     # 提取字段名和类型
                     key_fields = []
@@ -404,7 +418,7 @@ class NLConverter:
                     data_source["field_descriptions"] = field_descriptions
 
                 except Exception as e:
-                    print(f"    [WARN] 获取字段信息失败: {e}")
+                    logger.warning(f"获取字段信息失败: {e}")
                     # 如果获取失败，尝试使用LLM推断
                     data_source = self._infer_table_info_with_llm(data_source, user_input)
             else:
@@ -442,7 +456,7 @@ class NLConverter:
 
         if self.llm_client is None:
             # 无 LLM 时跳过推断
-            print("  [INFO] LLM 不可用，跳过 JOIN 关系推断")
+            logger.debug("  [INFO] LLM 不可用，跳过 JOIN 关系推断")
             return join_hints, extra_confirmations
 
         # 构建每张表的字段信息摘要
@@ -522,12 +536,12 @@ class NLConverter:
                 join_hints = filtered_hints
 
                 if join_hints:
-                    print(f"  ✓ 推断到 {len(join_hints)} 组关联关系")
+                    logger.info(f"  推断到 {len(join_hints)} 组关联关系")
                     for h in join_hints:
-                        print(f"    - {h['left_table']} --{h.get('join_type', 'JOIN')}--> {h['right_table']} ON {h.get('join_on', '?')}")
+                        logger.debug(f"    - {h['left_table']} --{h.get('join_type', 'JOIN')}--> {h['right_table']} ON {h.get('join_on', '?')}")
 
                 if unjoinable:
-                    print(f"  [WARN] {len(unjoinable)} 张表无法确定关联关系: {unjoinable}")
+                    logger.warning(f"  {len(unjoinable)} 张表无法确定关联关系: {unjoinable}")
                     extra_confirmations.append({
                         "category": "数据源",
                         "item": f"以下表之间未发现明显关联字段，可能需要手动确认关联关系：{', '.join(unjoinable)}",
@@ -549,7 +563,7 @@ class NLConverter:
                     })
 
         except Exception as e:
-            print(f"  [WARN] LLM 推断 JOIN 关系失败: {e}")
+            logger.warning(f"LLM 推断 JOIN 关系失败: {e}")
 
         return join_hints, extra_confirmations
 
@@ -597,7 +611,7 @@ class NLConverter:
                 data_source["field_descriptions"] = result.get("field_descriptions", data_source["field_descriptions"])
 
         except Exception as e:
-            print(f"    [WARN] LLM推断字段信息失败: {e}")
+            logger.warning(f"LLM推断字段信息失败: {e}")
 
         return data_source
 
@@ -708,11 +722,11 @@ class NLConverter:
                 dimensions = result.get("dimensions", [])
                 confirmation_items = result.get("confirmation_items", [])
 
-                print(f"  ✓ 推断到 {len(metrics)} 个指标, {len(dimensions)} 个维度")
+                logger.info(f"  推断到 {len(metrics)} 个指标, {len(dimensions)} 个维度")
                 return metrics, dimensions, confirmation_items
 
         except Exception as e:
-            print(f"  [WARN] LLM推断指标维度失败: {e}")
+            logger.warning(f"LLM推断指标维度失败: {e}")
 
         # 失败时使用备用方案
         return self._infer_metrics_and_dimensions_fallback(meta_info, data_sources)
@@ -834,7 +848,7 @@ class NLConverter:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
 
-        print(f"[SAVE] 转换结果已保存: {output_path}")
+        logger.info(f"转换结果已保存: {output_path}")
 
 
 def main():

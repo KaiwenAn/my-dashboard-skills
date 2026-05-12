@@ -9,115 +9,47 @@
 
 ---
 
-## 安装步骤
-
-### 1. 放置 Skill 文件
-
-将 `my-dashboard-skills/` 整个文件夹放到 WorkBuddy 的 skills 目录下：
+## 目录结构
 
 ```
-~/.workbuddy/skills/dashboard-agent/my-dashboard-skills/
+my-dashboard-skills/
+├── SKILL.md                      # Skill 描述文件（WorkBuddy 读取入口）
+├── USAGE.md                      # 详细使用指南
+├── INSTALL.md                    # 本文件
+│
+├── agents.py                     # Agent 模块（加载 Prompt 并执行）
+├── llm.py                        # LLM 调用封装（OpenAI SDK 兼容）
+├── pipeline.py                   # 编排引擎（Pipeline / Step / Context）
+├── renderer.py                   # Markdown → HTML 渲染器
+├── bi_api.py                     # BI 平台推送 API 客户端
+├── data_platform_api.py          # 数据平台 API 客户端（DESCRIBE / SQL 执行）
+│
+├── prompts/                      # Agent System Prompt 模板（与核心模块同级）
+│   ├── requirements-parser-agent.md
+│   ├── semantic-model-agent.md
+│   ├── bi-push-agent.md
+│   ├── chart-design-agent.md
+│   ├── instruction-generator-agent.md
+│   └── solution-generator-agent.md
+│
+├── scripts/
+│   ├── run_pipeline.py           # Pipeline 执行脚本（CLI 入口）
+│   ├── nl_converter.py           # 自然语言转换层
+│   ├── config.json               # 配置文件（需手动修改）
+│   └── temp_describe.py          # 临时调试脚本
+│
+├── references/
+│   ├── prompts/                  # Prompt 参考文档（给 AI Agent 阅读）
+│   │   └── ...
+│   └── examples/
+│       └── ecommerce_daily.json  # 示例输入
+│
+└── tests/                        # 单元测试（需自行运行）
+    └── ...
 ```
 
-放置后的目录结构应为：
-
-```
-~/.workbuddy/skills/dashboard-agent/
-└── my-dashboard-skills/
-    ├── SKILL.md              # Skill 描述文件（WorkBuddy 读取入口）
-    ├── USAGE.md              # 详细使用指南
-    ├── INSTALL.md            # 本文件
-    ├── scripts/
-    │   ├── run_pipeline.py   # Pipeline 执行脚本
-    │   ├── nl_converter.py   # 自然语言转换层
-    │   └── config.json       # 配置文件（需手动修改）
-    └── references/
-        ├── prompts/          # Agent System Prompt 模板
-        │   ├── requirements-parser-agent.md
-        │   ├── semantic-model-agent.md
-        │   ├── bi-push-agent.md
-        │   ├── chart-design-agent.md
-        │   ├── instruction-generator-agent.md
-        │   └── solution-generator-agent.md
-        └── examples/
-            └── ecommerce_daily.json
-```
-
-### 2. 放置核心依赖模块（必须）
-
-Pipeline 脚本依赖以下 Python 模块，它们位于独立的工作空间中，需要一并复制：
-
-```
-# 源目录（这些文件当前所在位置，例如你的开发环境）
-# 例如：c:\Users\YourName\WorkBuddy\20260427134240\
-
-# 需要复制的文件：
-llm.py                 # LLM 调用封装（OpenAI SDK 兼容）
-pipeline.py            # 编排引擎（Pipeline / Step / Context）
-agents.py              # Agent 模块（加载 Prompt 并执行）
-renderer.py            # Markdown → HTML 渲染器
-bi_api.py              # BI 平台推送 API 客户端
-data_platform_api.py   # 数据平台 API 客户端（DESCRIBE / SQL 执行）
-```
-
-**将这些文件复制到 Pipeline 的 `sys.path` 可达的目录**，有两种方式：
-
-#### 方式 A：放到 Skill 的 scripts 目录（推荐）
-
-```
-my-dashboard-skills/scripts/
-├── run_pipeline.py
-├── nl_converter.py
-├── config.json
-├── llm.py                 ← 复制
-├── pipeline.py            ← 复制
-├── agents.py              ← 复制
-├── renderer.py            ← 复制
-├── bi_api.py              ← 复制
-└── data_platform_api.py   ← 复制
-```
-
-然后修改 `run_pipeline.py` 中的 `WORKSPACE_DIR` 指向 `scripts/` 目录：
-
-```python
-# 原代码（第34行）：
-_default_workspace = str(Path.home() / "WorkBuddy" / "20260427134240")
-
-# 改为：
-_default_workspace = str(Path(__file__).parent)
-```
-
-#### 方式 B：通过环境变量指定
-
-将依赖模块放到任意目录，然后设置环境变量：
-
-```bash
-# Windows PowerShell
-$env:WORKSPACE_DIR = "C:\path\to\your\modules"
-
-# Linux/macOS
-export WORKSPACE_DIR="/path/to/your/modules"
-```
-
-### 3. 复制 Prompt 文件（必须）
-
-`agents.py` 在运行时会从 `prompts/` 目录加载 System Prompt 文件。确保以下文件与 `agents.py` 同级：
-
-```
-<你的模块目录>/
-├── agents.py
-└── prompts/
-    ├── requirements-parser-agent.md
-    ├── semantic-model-agent.md
-    ├── bi-push-agent.md
-    ├── chart-design-agent.md
-    ├── instruction-generator-agent.md
-    └── solution-generator-agent.md
-```
-
-> 注意：Skill 的 `references/prompts/` 是给 AI Agent 阅读的参考文档，`agents.py` 实际加载的是模块目录下的 `prompts/` 文件夹。两者内容应保持一致。
-
-### 4. 安装 Python 依赖
+> 所有核心 Python 模块（agents.py、llm.py、pipeline.py 等）与 prompts/ 目录同级。
+> 运行 `run_pipeline.py` 时会自动将 `scripts/` 的父目录加入 `sys.path`，无需额外配置。
 
 ```bash
 pip install openai httpx python-dotenv requests
@@ -187,7 +119,7 @@ pip install openai httpx python-dotenv requests
 
 ```bash
 # 1. 确认模块导入正常
-python -c "import sys; sys.path.insert(0, 'scripts'); from llm import LLMClient; from pipeline import Pipeline; from agents import RunMode; print('OK')"
+cd scripts && python -c "from llm import LLMClient; from pipeline import Pipeline; from agents import RunMode; print('OK')"
 
 # 2. 使用示例文件运行一次完整 Pipeline
 python scripts/run_pipeline.py --input references/examples/ecommerce_daily.json --output ./test_output
@@ -220,44 +152,4 @@ config.json > 环境变量 > 代码默认值
 3. **LLM 模型需兼容 OpenAI SDK 格式**：支持硅基流动、DeepSeek、腾讯混元等
 4. **BI 推送功能**：需要在输入 JSON 中提供 `bi_config`（含 `space_id` 和 `creator`），`datasource_id` 会自动获取
 
----
 
-## 文件清单
-
-分享 Skill 时需要包含的完整文件列表：
-
-```
-my-dashboard-skills/
-├── SKILL.md                                          # Skill 描述
-├── USAGE.md                                          # 使用指南
-├── INSTALL.md                                        # 安装说明（本文件）
-├── scripts/
-│   ├── run_pipeline.py                               # Pipeline 入口
-│   ├── nl_converter.py                               # 自然语言转换
-│   ├── config.json                                   # 配置模板（敏感值已替换）
-│   ├── llm.py                                        # [必须] LLM 封装
-│   ├── pipeline.py                                   # [必须] 编排引擎
-│   ├── agents.py                                     # [必须] Agent 模块
-│   ├── renderer.py                                   # [必须] HTML 渲染
-│   ├── bi_api.py                                     # [必须] BI 推送
-│   ├── data_platform_api.py                          # [必须] 数据平台
-│   └── prompts/                                      # [必须] Agent Prompt
-│       ├── requirements-parser-agent.md
-│       ├── semantic-model-agent.md
-│       ├── bi-push-agent.md
-│       ├── chart-design-agent.md
-│       ├── instruction-generator-agent.md
-│       └── solution-generator-agent.md
-└── references/
-    ├── prompts/                                      # 参考用 Prompt 副本
-    │   ├── requirements-parser-agent.md
-    │   ├── semantic-model-agent.md
-    │   ├── bi-push-agent.md
-    │   ├── chart-design-agent.md
-    │   ├── instruction-generator-agent.md
-    │   └── solution-generator-agent.md
-    └── examples/
-        └── ecommerce_daily.json                      # 示例输入
-```
-
-> 标注 `[必须]` 的文件当前位于外部工作空间 `WorkBuddy/20260427134240/`，分享前需复制到 `scripts/` 目录并修改路径引用。
