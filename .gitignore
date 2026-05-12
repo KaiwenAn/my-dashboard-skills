@@ -1,0 +1,29 @@
+# 工作目录内部文件
+.workbuddy/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# 凭据文件
+*.pem
+*.key
+credentials.json
