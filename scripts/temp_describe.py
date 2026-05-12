@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 """临时脚本：获取表结构"""
 import sys
-sys.path.insert(0, r'C:\Users\Kai\WorkBuddy\20260427134240')
+from pathlib import Path
+
+# 自动检测依赖模块路径（脚本所在目录的父目录）
+_default_path = str(Path(__file__).parent.parent)
+sys.path.insert(0, _default_path)
+
+# 可通过环境变量 WORKSPACE_DIR 覆盖
+import os
+workspace_dir = os.getenv("WORKSPACE_DIR", _default_path)
+sys.path.insert(0, workspace_dir)
+
 from data_platform_api import DataPlatformClient
 
 client = DataPlatformClient(

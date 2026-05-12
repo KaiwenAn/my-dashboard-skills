@@ -138,26 +138,41 @@ class NLConverter:
         print(f"{'='*60}\n")
 
         # Step 1: 使用LLM从自然语言中提取基本信息
-        print("[Step 1/4] 提取看板元信息...")
+        print("[Step 1/5] 提取看板元信息...")
         meta_info = self._extract_meta_info(natural_language)
 
         # Step 2: 提取数据源表名
-        print("[Step 2/4] 提取数据源表名...")
+        print("[Step 2/5] 提取数据源表名...")
         table_names = self._extract_table_names(natural_language, meta_info)
 
         # Step 3: 获取表字段信息
-        print("[Step 3/4] 获取表字段信息...")
+        print("[Step 3/5] 获取表字段信息...")
         data_sources = self._fetch_table_info(table_names, natural_language)
 
+        # Step 3.5: 推断多表关联关系（仅 >= 2 张表时）
+        join_hints = []
+        join_confirmations = []
+        if len(data_sources) >= 2:
+            print("[Step 3.5/5] 推断多表关联关系...")
+            join_hints, join_confirmations = self._infer_join_hints(
+                data_sources, natural_language, meta_info
+            )
+        else:
+            print("[Step 3.5/5] 单表场景，跳过关联推断")
+
         # Step 4: 推断指标和维度
-        print("[Step 4/4] 推断指标和维度...")
+        print("[Step 4/5] 推断指标和维度...")
         metrics, dimensions, confirmation_items = self._infer_metrics_and_dimensions(
             natural_language, meta_info, data_sources
         )
 
+        # 合并关联推断的确认项
+        confirmation_items.extend(join_confirmations)
+
         # 构建最终输出
         result = self._build_output(
-            meta_info, data_sources, metrics, dimensions, confirmation_items
+            meta_info, data_sources, metrics, dimensions, confirmation_items,
+            join_hints=join_hints
         )
 
         # 检测自然语言中的模式关键词
@@ -176,6 +191,7 @@ class NLConverter:
         print("[NLConverter] 转换完成!")
         print(f"  看板标题: {result['dashboard_meta']['title']}")
         print(f"  数据源: {len(result['data_sources'])} 张表")
+        print(f"  关联关系: {len(join_hints)} 组")
         print(f"  指标: {len(result['metrics_requirement'])} 个")
         print(f"  维度: {len(result['dimensions_requirement'])} 个")
         print(f"  确认项: {len(result.get('confirmation_items', []))} 项")
@@ -402,6 +418,140 @@ class NLConverter:
             data_sources.append(data_source)
 
         return data_sources
+
+    def _infer_join_hints(
+        self,
+        data_sources: List[Dict[str, Any]],
+        user_input: str,
+        meta_info: Dict[str, Any]
+    ) -> tuple:
+        """
+        使用 LLM 推断多表之间的 JOIN 关系
+
+        Args:
+            data_sources: 已获取字段信息的数据源列表
+            user_input: 原始用户输入
+            meta_info: 看板元信息
+
+        Returns:
+            (join_hints, confirmation_items)
+            join_hints 格式: [{left_table, right_table, join_on, join_type, notes}]
+        """
+        join_hints = []
+        extra_confirmations = []
+
+        if self.llm_client is None:
+            # 无 LLM 时跳过推断
+            print("  [INFO] LLM 不可用，跳过 JOIN 关系推断")
+            return join_hints, extra_confirmations
+
+        # 构建每张表的字段信息摘要
+        tables_info = []
+        for ds in data_sources:
+            table_info = {
+                "table_name": ds["table_name"],
+                "table_type": ds.get("table_type", "fact"),
+                "description": ds.get("description", ""),
+                "key_fields": ds.get("key_fields", []),
+                "field_descriptions": ds.get("field_descriptions", {})
+            }
+            # 只取前 30 个字段避免 prompt 过长
+            if len(table_info["key_fields"]) > 30:
+                table_info["key_fields"] = table_info["key_fields"][:30]
+                table_info["field_descriptions"] = {
+                    k: v for k, v in list(table_info["field_descriptions"].items())[:30]
+                }
+            tables_info.append(table_info)
+
+        tables_json = json.dumps(tables_info, ensure_ascii=False, indent=2)
+
+        prompt = f"""你是一位数据分析专家，需要根据多张表的字段信息，推断表之间的 JOIN（关联）关系。
+
+用户需求：{user_input}
+看板标题：{meta_info.get('title', '数据分析看板')}
+
+表信息：
+{tables_json}
+
+请推断这些表之间如何关联（以JSON格式输出，不要附加任何解释）：
+{{
+  "join_hints": [
+    {{
+      "left_table": "完整表名（作为主表/左表）",
+      "right_table": "完整表名（作为关联表/右表）",
+      "join_on": "关联字段，如 user_id = user_id 或 a.user_id = b.user_id",
+      "join_type": "LEFT JOIN 或 INNER JOIN",
+      "notes": "简要说明为什么这样关联"
+    }}
+  ],
+  "unjoinable_tables": ["无法确定关联关系的表名（如有）"]
+}}
+
+推断规则：
+1. 优先通过同名字段（尤其是 id 类字段如 user_id, order_id, device_id）推断关联关系
+2. 主表（fact 表）放左边，维度表（dim 表）放右边
+3. 事实表与维度表：默认使用 LEFT JOIN
+4. 事实表与事实表：默认使用 INNER JOIN
+5. 如果两张表之间没有明显的关联字段，不要强行关联，放入 unjoinable_tables
+6. join_on 字段优先使用精确的字段名匹配，如 "user_id = user_id"
+7. 只输出 JSON，不要输出其他内容"""
+
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            content = response.choices[0].message.content.strip()
+
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                join_hints = result.get("join_hints", [])
+                unjoinable = result.get("unjoinable_tables", [])
+
+                # 过滤：确保表名在 data_sources 中存在
+                valid_tables = {ds["table_name"] for ds in data_sources}
+                filtered_hints = []
+                for hint in join_hints:
+                    lt = hint.get("left_table", "")
+                    rt = hint.get("right_table", "")
+                    if lt in valid_tables and rt in valid_tables:
+                        filtered_hints.append(hint)
+
+                join_hints = filtered_hints
+
+                if join_hints:
+                    print(f"  ✓ 推断到 {len(join_hints)} 组关联关系")
+                    for h in join_hints:
+                        print(f"    - {h['left_table']} --{h.get('join_type', 'JOIN')}--> {h['right_table']} ON {h.get('join_on', '?')}")
+
+                if unjoinable:
+                    print(f"  [WARN] {len(unjoinable)} 张表无法确定关联关系: {unjoinable}")
+                    extra_confirmations.append({
+                        "category": "数据源",
+                        "item": f"以下表之间未发现明显关联字段，可能需要手动确认关联关系：{', '.join(unjoinable)}",
+                        "risk_if_wrong": "未关联的表数据将独立分析，无法实现跨表联合查询",
+                        "suggested_value": "请确认这些表是否需要关联，以及关联条件"
+                    })
+
+                # 所有推断结果都加入确认项
+                if join_hints:
+                    relations_desc = "; ".join(
+                        f"{h['left_table']} 与 {h['right_table']} 通过 {h.get('join_on', '?')} ({h.get('join_type', 'JOIN')})"
+                        for h in join_hints
+                    )
+                    extra_confirmations.append({
+                        "category": "数据源",
+                        "item": f"表关联关系已自动推断：{relations_desc}",
+                        "risk_if_wrong": "关联关系错误会导致数据重复或遗漏",
+                        "suggested_value": "请确认关联字段和关联类型是否正确"
+                    })
+
+        except Exception as e:
+            print(f"  [WARN] LLM 推断 JOIN 关系失败: {e}")
+
+        return join_hints, extra_confirmations
 
     def _infer_table_info_with_llm(self, data_source: Dict, user_input: str) -> Dict:
         """使用LLM推断表的字段信息"""
@@ -641,7 +791,8 @@ class NLConverter:
         data_sources: List[Dict[str, Any]],
         metrics: List[Dict],
         dimensions: List[Dict],
-        confirmation_items: List[Dict]
+        confirmation_items: List[Dict],
+        join_hints: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
         """
         构建最终的输出JSON
@@ -649,6 +800,7 @@ class NLConverter:
         符合现有输入规范：
         - dashboard_meta
         - data_sources
+        - join_hints（多表关联关系，可选）
         - metrics_requirement
         - dimensions_requirement
         - filters_known
@@ -667,6 +819,10 @@ class NLConverter:
             "additional_notes": "由自然语言自动转换生成，请确认各项内容是否正确。",
             "confirmation_items": confirmation_items  # 额外添加确认项（Pipeline会处理）
         }
+
+        # 多表时写入 join_hints
+        if join_hints:
+            output["join_hints"] = join_hints
 
         return output
 

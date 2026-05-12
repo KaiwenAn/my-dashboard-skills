@@ -48,8 +48,8 @@
 Pipeline 脚本依赖以下 Python 模块，它们位于独立的工作空间中，需要一并复制：
 
 ```
-# 源目录（你的开发环境）
-c:\Users\Kai\WorkBuddy\20260427134240\
+# 源目录（这些文件当前所在位置，例如你的开发环境）
+# 例如：c:\Users\YourName\WorkBuddy\20260427134240\
 
 # 需要复制的文件：
 llm.py                 # LLM 调用封装（OpenAI SDK 兼容）

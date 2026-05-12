@@ -33,9 +33,9 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent
 
 # 确定工作空间目录
-# 默认：C:\Users\Kai\WorkBuddy\20260427134240
+# 默认：脚本所在目录的父目录（即项目根目录）
 # 可通过环境变量 WORKSPACE_DIR 覆盖
-_default_workspace = str(Path.home() / "WorkBuddy" / "20260427134240")
+_default_workspace = str(SKILL_DIR.parent)
 WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", _default_workspace))
 
 # 尝试从工作空间加载依赖模块

@@ -16,6 +16,13 @@
 
 ## 快速开始
 
+> **⚠️ 重要：关于工作目录**
+> 
+> 本 Skill 的工作目录是 `my-dashboard-skills` 子目录。
+> - ✅ **正确**：`cd my-dashboard-skills` 后再执行
+> - ✅ **也正确**：从任何目录执行时，使用完整路径 `my-dashboard-skills/scripts/run_pipeline.py`
+> - ❌ **错误**：在 `dashboard-agent` 目录直接执行 `python scripts/run_pipeline.py`
+
 ### 方式一：自然语言触发（推荐）
 
 在 WorkBuddy 中加载 Skill 后，直接用自然语言描述需求：
@@ -27,12 +34,21 @@
 
 ### 方式二：CLI 执行
 
+**方法A：先进入工作目录（推荐）**
+
 ```bash
-# 进入工作空间
-cd c:\Users\Kai\WorkBuddy\20260427134240
+# 进入 Skill 工作目录
+cd c:\Users\Kai\.workbuddy\skills\dashboard-agent\my-dashboard-skills
 
 # 执行 Pipeline
-python main.py --input examples/ecommerce_daily.json --output ./output
+python scripts/run_pipeline.py --input references/examples/ecommerce_daily.json --output ./output
+```
+
+**方法B：使用完整相对路径**
+
+```bash
+# 在 dashboard-agent 目录执行
+python my-dashboard-skills/scripts/run_pipeline.py --input my-dashboard-skills/references/examples/ecommerce_daily.json --output my-dashboard-skills/output
 ```
 
 ---

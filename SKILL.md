@@ -92,9 +92,20 @@ python scripts/run_pipeline.py --natural-input-file input.txt
 
 ## 执行方式
 
+> **⚠️ 重要：关于工作目录**
+> 
+> 本 Skill 的工作目录是 `my-dashboard-skills` 子目录。执行命令时请选择以下任一方式：
+> - ✅ **推荐**：先 `cd my-dashboard-skills` 进入工作目录，再执行 `python scripts/run_pipeline.py ...`
+> - ✅ **或使用完整路径**：从任何目录执行 `python my-dashboard-skills/scripts/run_pipeline.py ...`
+
 WorkBuddy 调用 `scripts/run_pipeline.py` 执行流水线：
 
+**方法A：先进入工作目录（推荐）**
+
 ```bash
+# 进入 Skill 工作目录
+cd c:\Users\Kai\.workbuddy\skills\dashboard-agent\my-dashboard-skills
+
 # 方式1：自然语言输入（新增）
 python scripts/run_pipeline.py --natural-input "需求描述"
 
@@ -102,11 +113,19 @@ python scripts/run_pipeline.py --natural-input "需求描述"
 python scripts/run_pipeline.py --natural-input-file input.txt --output ./output
 
 # 方式3：JSON文件输入（原有）
-python scripts/run_pipeline.py --input <需求JSON文件路径> --output <输出目录>
+python scripts/run_pipeline.py --input references/examples/ecommerce_daily.json --output ./output
 
 # 指定运行模式（覆盖配置）
 python scripts/run_pipeline.py --natural-input "..." --mode publish   # 强制推送
 python scripts/run_pipeline.py --natural-input "..." --mode plan      # 强制方案
+```
+
+**方法B：使用完整相对路径**
+
+```bash
+# 在 dashboard-agent 目录执行
+python my-dashboard-skills/scripts/run_pipeline.py --natural-input "需求描述"
+python my-dashboard-skills/scripts/run_pipeline.py --input my-dashboard-skills/references/examples/ecommerce_daily.json --output my-dashboard-skills/output
 ```
 
 ## 输出结果
