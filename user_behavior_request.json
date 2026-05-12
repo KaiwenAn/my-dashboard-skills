@@ -1,0 +1,36 @@
+{
+  "dashboard_meta": {
+    "title": "用户行为分析看板",
+    "audience": "产品经理、数据分析师",
+    "goal": "分析用户行为路径、页面停留、功能使用、转化率等核心指标"
+  },
+  "data_sources": [
+    {
+      "table_name": "iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view",
+      "description": "用户模块页面访问表，记录用户在APP/Web端的页面访问、模块点击等行为数据",
+      "table_type": "fact",
+      "key_fields": [],
+      "field_mappings": {},
+      "field_descriptions": {}
+    }
+  ],
+  "join_hints": [],
+  "metrics_requirement": [
+    {"name": "DAU", "description": "日活跃用户数"},
+    {"name": "页面访问次数", "description": "各页面的访问量统计"},
+    {"name": "人均访问次数", "description": "人均页面访问次数"},
+    {"name": "功能使用率", "description": "各功能模块的使用率"},
+    {"name": "跳出率", "description": "访问后离开的比例"},
+    {"name": "转化率", "description": "从访问到目标行为的转化比例"}
+  ],
+  "dimensions_requirement": [
+    {"name": "日期", "description": "按天分析"},
+    {"name": "页面/模块", "description": "按页面或功能模块分析"},
+    {"name": "用户类型", "description": "新用户 vs 老用户"},
+    {"name": "渠道", "description": "用户来源渠道"}
+  ],
+  "filters_known": [
+    {"field": "dt", "operator": "=", "value": ["最近30天"]}
+  ],
+  "additional_notes": "这是一个用户行为分析看板，主要分析用户在APP/Web端的行为路径。数据源是dwd_user_module_page_view表。由于我无法获取表结构，请在生成语义模型时先自动拉取表字段信息，然后根据实际字段调整指标和维度定义。如果某些字段不存在，请合理推断并说明。"
+}

@@ -1,0 +1,10 @@
+{
+  "pipeline_id": "pipe_1778560117",
+  "status": "failed",
+  "total_duration_ms": 0.0,
+  "total_duration_min": 0.0,
+  "step_durations": {
+    "requirements_parser": 0
+  },
+  "confirmation_items_count": 0
+}

@@ -1,0 +1,32 @@
+{
+  "dashboard_meta": {
+    "title": "电商运营日报",
+    "audience": "运营团队",
+    "goal": "监控每日核心经营指标，及时发现异常波动"
+  },
+  "data_sources": [
+    {
+      "table_name": "dwd_order_detail",
+      "description": "订单明细表，每日增量",
+      "key_fields": ["order_id", "user_id", "order_amount", "order_status", "pay_time", "category_id", "refund_amount"]
+    },
+    {
+      "table_name": "dim_user",
+      "description": "用户维度表",
+      "key_fields": ["user_id", "register_date", "province", "city", "user_type"]
+    }
+  ],
+  "metrics_requirement": [
+    {"name": "GMV", "description": "成交总额"},
+    {"name": "客单价", "description": "平均每单金额"},
+    {"name": "新客占比", "description": "新客户GMV占比"},
+    {"name": "退款率", "description": "退款金额/GMV"}
+  ],
+  "dimensions_requirement": [
+    {"name": "日期"},
+    {"name": "商品类目"},
+    {"name": "地区"}
+  ],
+  "filters_known": [],
+  "additional_notes": "时间范围默认最近30天，需要区分新老客，退款率要单独看"
+}

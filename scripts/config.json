@@ -1,0 +1,24 @@
+{
+  "_comment": "配置文件 - 会覆盖环境变量。优先顺序：配置文件 > 环境变量 > 默认值",
+  "data_platform": {
+    "base_url": "https://proxy-service-http-cnbj1-dp.api.xiaomi.net",
+    "catalog": "iceberg_zjyprc_hadoop",
+    "schema": "meta",
+    "engine": "Spark",
+    "token": "62f6e3737750485ba1b7fdb0e6a65b15"
+  },
+  "bi_platform": {
+    "base_url": "https://api-smp.dt.mi.com",
+    "api_prefix": "/os"
+  },
+  "llm": {
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "api_key": "sk-dognzwogtlckwuxwklipznmavgiytxahjncvwdqzfegtjfhn",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "temperature": 0.1
+  }
+}
+
+
+
+

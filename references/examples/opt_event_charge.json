@@ -1,0 +1,122 @@
+{
+  "dashboard_meta": {
+    "title": "僵尸事件看板",
+    "audience": "手机部",
+    "goal": "展示可优化事件对应的成本，圈定具备优化空间的事件范围，实现成本优化的多维度研判。"
+  },
+  "data_sources": [
+    {
+      "table_name": "iceberg_zjyprc_hadoop.meta.dm_bill_event_charge_without_visit_v2_df",
+      "description": "事件粒度的成本表（主表），每日增量。包括采集成本和使用成本两部分",
+      "table_type": "fact",
+      "key_fields": ["date", "app_id", "region", "event_name", "event_guid", "charge_track", "charge_use"]
+    },
+    {
+      "table_name": "iceberg_zjyprc_hadoop.tracking.track_app_info",
+      "description": "app维度表，提供app名称和负责人信息",
+      "table_type": "dimension",
+      "key_fields": ["project_id", "real_app_id", "name", "owner"],
+      "field_mappings": {
+        "real_app_id": "app_id"
+      }
+    },
+    {
+      "table_name": "iceberg_zjyprc_hadoop.tracking.track_event_info",
+      "description": "事件维度表，提供事件中文名。is_delete = 0表示事件未被删除",
+      "table_type": "dimension",
+      "key_fields": ["project_id", "name", "display_name"],
+      "field_mappings": {
+        "name": "event_name"
+      }
+    },
+    {
+      "table_name": "iceberg_zjyprc_hadoop.meta.dwm_bill_optimize_event_v2_df",
+      "description": "每日可优化事件表。表中所有事件均为可优化事件",
+      "table_type": "fact",
+      "key_fields": ["date", "event_guid", "opt_flg"],
+      "field_descriptions": {
+        "opt_flg": "可优化事件类型标识，不同取值代表不同优化方向（如类型1、类型2等），并非只有特定取值才代表可优化",
+        "event_guid": "事件唯一标识，关联主表的event_guid字段进行事件级别的关联分析。event_guid由region、app_id、事件名三部分构成"
+      }
+    },
+    {
+      "table_name": "iceberg_zjyprc_hadoop.meta.dwm_bill_event_onetrack_charge_share_di",
+      "description": "app的onetrack成本表，包含app归属部门信息，用作维度表补齐app的归属部门",
+      "table_type": "fact_as_dimension",
+      "key_fields": ["date", "app_id", "bu_dept1_name", "bu_dept2_name"],
+      "dimension_usage_hint": "作为维度表使用时，需先按 app_id, date 去重（DISTINCT），避免因粒度不一致导致主表数据膨胀"
+    }
+  ],
+  "join_hints": [
+    {
+      "left_table": "iceberg_zjyprc_hadoop.meta.dm_bill_event_charge_without_visit_v2_df",
+      "right_table": "iceberg_zjyprc_hadoop.tracking.track_app_info",
+      "join_on": "app_id = real_app_id",
+      "join_type": "LEFT JOIN",
+      "notes": "主表app_id对应维度表real_app_id"
+    },
+    {
+      "left_table": "iceberg_zjyprc_hadoop.meta.dm_bill_event_charge_without_visit_v2_df",
+      "right_table": "iceberg_zjyprc_hadoop.tracking.track_event_info",
+      "join_on": "event_name = name",
+      "join_type": "LEFT JOIN",
+      "notes": "主表event_name对应维度表name"
+    },
+    {
+      "left_table": "iceberg_zjyprc_hadoop.meta.dm_bill_event_charge_without_visit_v2_df",
+      "right_table": "iceberg_zjyprc_hadoop.meta.dwm_bill_optimize_event_v2_df",
+      "join_on": "event_guid = event_guid AND date = date",
+      "join_type": "LEFT JOIN",
+      "notes": "通过event_guid和date双字段关联"
+    },
+    {
+      "left_table": "iceberg_zjyprc_hadoop.meta.dm_bill_event_charge_without_visit_v2_df",
+      "right_table": "iceberg_zjyprc_hadoop.meta.dwm_bill_event_onetrack_charge_share_di",
+      "join_on": "app_id = app_id AND date = date",
+      "join_type": "LEFT JOIN",
+      "notes": "此表为事实表当维度表用，JOIN前需先按app_id,date去重；且此表也有date字段，必须在WHERE中同步限制日期"
+    }
+  ],
+  "metrics_requirement": [
+    {"name": "可优化成本", "description": "可优化事件对应的charge_use和charge_track之和。注意：dwm_bill_optimize_event_v2_df中的所有事件都是可优化事件，不需要用opt_flg做条件过滤"},
+    {"name": "charge_track", "description": "事件采集成本"},
+    {"name": "charge_use", "description": "事件使用成本"}
+  ],
+  "dimensions_requirement": [
+    {"name": "date"},
+    {"name": "app_id"},
+    {"name": "app_name"},
+    {"name": "app_owner"},
+    {"name": "region"},
+    {"name": "event_name"},
+    {"name": "display_name"},
+    {"name": "event_guid"},
+    {"name": "opt_flg"},
+    {"name": "bu_dept1_name"},
+    {"name": "bu_dept2_name"}
+  ],
+  "filters_known": [
+    {
+      "field": "date",
+      "operator": "=",
+      "value": ["${date-1}"],
+      "applies_to_all_tables": true
+    },
+    {
+      "field": "bu_dept1_name",
+      "operator": "=",
+      "value": ["手机部"]
+    },
+    {
+      "field": "is_delete",
+      "operator": "=",
+      "value": ["0"]
+    },
+    {
+      "field": "app_id",
+      "operator": "!=",
+      "value": ["null"]
+    }
+  ],
+  "additional_notes": "事实表在表连接前先按照关键字段进行维度聚合。所有被JOIN的表如果也有date字段，必须在WHERE中同步限制日期条件。"
+}

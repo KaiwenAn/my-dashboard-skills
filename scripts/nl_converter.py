@@ -1,0 +1,672 @@
+"""
+自然语言 → 结构化JSON 转换层
+
+让用户可以用自然语言描述需求，无需手写 JSON 输入文件。
+转换后的 JSON 直接喂给现有 Pipeline。
+
+用法：
+    # 方式1：直接输入自然语言
+    python run_pipeline.py --natural-input "帮我做一个用户行为分析看板，数据源是iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view"
+
+    # 方式2：从文件读取自然语言
+    python run_pipeline.py --natural-input-file input.txt --output ./output
+"""
+
+import os
+import json
+import re
+import argparse
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+
+# 添加skill目录到Python路径
+SKILL_DIR = Path(__file__).parent
+SKILL_ROOT = SKILL_DIR.parent
+
+# 确定工作空间目录
+_default_workspace = str(Path.home() / "WorkBuddy" / "20260427134240")
+WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", _default_workspace))
+
+# 尝试从工作空间加载依赖模块
+import sys
+sys.path.insert(0, str(WORKSPACE_DIR))
+
+try:
+    from data_platform_api import DataPlatformClient
+except ImportError as e:
+    print(f"[WARN] 无法导入 data_platform_api: {e}")
+    DataPlatformClient = None
+
+
+def load_config():
+    """加载配置文件"""
+    config_path = SKILL_DIR / "config.json"
+    if config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+class NLConverter:
+    """
+    自然语言转结构化JSON转换器
+
+    职责：
+    1. 从自然语言提取 dashboard_meta（title/audience/goal）
+    2. 提取数据源表名
+    3. 自动调用 describe_table 获取字段信息
+    4. 基于表名、字段名、业务常识推断 metrics_requirement 和 dimensions_requirement
+    5. 所有推断内容标记为 need_confirm，生成 confirmation_items
+    6. 输出符合现有规范的JSON，直接传给 Pipeline
+    """
+
+    def __init__(
+        self,
+        llm_config: Dict[str, Any],
+        dp_config: Dict[str, Any]
+    ):
+        """
+        初始化转换器
+
+        Args:
+            llm_config: LLM配置（model/api_key/base_url）
+            dp_config: 数据平台配置（base_url/token/catalog/schema/engine）
+        """
+        self.llm_config = llm_config
+        self.dp_config = dp_config
+        self.llm_client = None
+        self.dp_client = None
+
+        # 初始化LLM客户端
+        self._init_llm()
+
+        # 初始化数据平台客户端
+        self._init_data_platform()
+
+    def _init_llm(self):
+        """初始化LLM客户端"""
+        try:
+            import openai
+            self.llm_client = openai.OpenAI(
+                api_key=self.llm_config.get("api_key"),
+                base_url=self.llm_config.get("base_url")
+            )
+            self.model = self.llm_config.get("model", "deepseek-ai/DeepSeek-V4-Flash")
+            self.temperature = self.llm_config.get("temperature", 0.1)
+        except ImportError:
+            print("[WARN] openai 包未安装，将使用模拟模式")
+            self.llm_client = None
+
+    def _init_data_platform(self):
+        """初始化数据平台客户端"""
+        if DataPlatformClient is None:
+            print("[WARN] DataPlatformClient 不可用，跳过字段自动获取")
+            return
+
+        base_url = self.dp_config.get("base_url")
+        token = self.dp_config.get("token")
+
+        if not base_url or not token:
+            print("[WARN] 数据平台配置不完整，跳过字段自动获取")
+            return
+
+        try:
+            self.dp_client = DataPlatformClient(
+                base_url=base_url,
+                token=token,
+                catalog=self.dp_config.get("catalog"),
+                schema=self.dp_config.get("schema"),
+                engine=self.dp_config.get("engine", "Spark")
+            )
+        except Exception as e:
+            print(f"[WARN] 数据平台客户端初始化失败: {e}")
+            self.dp_client = None
+
+    def convert(self, natural_language: str) -> Dict[str, Any]:
+        """
+        将自然语言转换为结构化JSON
+
+        Args:
+            natural_language: 用户的自然语言描述
+
+        Returns:
+            符合现有输入规范的结构化JSON
+        """
+        print(f"\n{'='*60}")
+        print("[NLConverter] 开始转换自然语言输入...")
+        print(f"  输入: {natural_language[:100]}...")
+        print(f"{'='*60}\n")
+
+        # Step 1: 使用LLM从自然语言中提取基本信息
+        print("[Step 1/4] 提取看板元信息...")
+        meta_info = self._extract_meta_info(natural_language)
+
+        # Step 2: 提取数据源表名
+        print("[Step 2/4] 提取数据源表名...")
+        table_names = self._extract_table_names(natural_language, meta_info)
+
+        # Step 3: 获取表字段信息
+        print("[Step 3/4] 获取表字段信息...")
+        data_sources = self._fetch_table_info(table_names, natural_language)
+
+        # Step 4: 推断指标和维度
+        print("[Step 4/4] 推断指标和维度...")
+        metrics, dimensions, confirmation_items = self._infer_metrics_and_dimensions(
+            natural_language, meta_info, data_sources
+        )
+
+        # 构建最终输出
+        result = self._build_output(
+            meta_info, data_sources, metrics, dimensions, confirmation_items
+        )
+
+        print(f"\n{'='*60}")
+        print("[NLConverter] 转换完成!")
+        print(f"  看板标题: {result['dashboard_meta']['title']}")
+        print(f"  数据源: {len(result['data_sources'])} 张表")
+        print(f"  指标: {len(result['metrics_requirement'])} 个")
+        print(f"  维度: {len(result['dimensions_requirement'])} 个")
+        print(f"  确认项: {len(result.get('confirmation_items', []))} 项")
+        print(f"{'='*60}\n")
+
+        return result
+
+    def _extract_meta_info(self, text: str) -> Dict[str, Any]:
+        """
+        使用LLM从自然语言中提取看板元信息
+
+        Returns:
+            {
+                "title": "看板标题",
+                "audience": "目标受众（推断）",
+                "goal": "看板目标（推断）",
+                "dashboard_type": "看板类型（推断，如：用户行为分析、销售分析等）"
+            }
+        """
+        if self.llm_client is None:
+            # 模拟模式：简单规则提取
+            return self._extract_meta_info_fallback(text)
+
+        prompt = f"""你是一位数据分析专家，需要从用户的自然语言描述中提取看板元信息。
+
+用户输入：
+{text}
+
+请提取以下信息（以JSON格式输出，不要附加任何解释）：
+{{
+  "title": "看板标题（从用户输入中提取或生成，要简洁准确）",
+  "audience": "目标受众（如：产品经理、运营团队、数据分析师等，如果用户输入未提及则根据看板内容推断）",
+  "goal": "看板目标（一句话描述这个看板要解决什么问题，如果用户输入未提及则根据看板内容推断）"
+}}
+
+注意：
+- title 要简洁，不超过20个字
+- audience 和 goal 如果无法准确推断，可以填写"待确认"
+- 只输出JSON，不要输出其他内容"""
+
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            content = response.choices[0].message.content.strip()
+
+            # 提取JSON
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                return result
+            else:
+                raise ValueError("LLM返回内容无法解析为JSON")
+
+        except Exception as e:
+            print(f"  [WARN] LLM提取元信息失败: {e}，使用规则提取")
+            return self._extract_meta_info_fallback(text)
+
+    def _extract_meta_info_fallback(self, text: str) -> Dict[str, Any]:
+        """规则提取元信息（备用）"""
+        # 尝试从文本中提取标题
+        title_match = re.search(r'(.+?)(看板|仪表盘|dashboard)', text, re.IGNORECASE)
+        if title_match:
+            title = title_match.group(1).strip() + "看板"
+        else:
+            title = "数据分析看板"
+
+        return {
+            "title": title,
+            "audience": "待确认",
+            "goal": "待确认"
+        }
+
+    def _extract_table_names(self, text: str, meta_info: Dict[str, Any]) -> List[str]:
+        """
+        从自然语言中提取数据源表名
+
+        支持多种格式：
+        - 完整三级表名：iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view
+        - 两级表名：meta.dwd_user_module_page_view
+        - 用引号包裹的表名："dwd_user_module_page_view"
+        """
+        table_names = []
+
+        # 模式1：完整三级表名（catalog.schema.table）
+        pattern_full = r'([a-z0-9_]+)\.([a-z0-9_]+)\.([a-z0-9_]+)'
+        matches = re.findall(pattern_full, text)
+        for match in matches:
+            full_name = f"{match[0]}.{match[1]}.{match[2]}"
+            if full_name not in table_names:
+                table_names.append(full_name)
+
+        # 模式2：两级表名（schema.table）
+        if not table_names:
+            pattern_two = r'([a-z0-9_]+)\.([a-z0-9_]+)'
+            matches = re.findall(pattern_two, text)
+            for match in matches:
+                full_name = f"{meta_info.get('catalog', 'iceberg_zjyprc_hadoop')}.{match[0]}.{match[1]}"
+                if full_name not in table_names:
+                    table_names.append(full_name)
+
+        # 模式3：引号包裹的表名
+        if not table_names:
+            pattern_quoted = r'[\'"`]([a-z0-9_]+)[\'"`]'
+            matches = re.findall(pattern_quoted, text)
+            for table_name in matches:
+                # 假设是完整表名的一部分
+                if '.' not in table_name:
+                    full_name = f"{meta_info.get('catalog', 'iceberg_zjyprc_hadoop')}.{meta_info.get('schema', 'meta')}.{table_name}"
+                    if full_name not in table_names:
+                        table_names.append(full_name)
+
+        print(f"  提取到 {len(table_names)} 张表: {table_names}")
+        return table_names
+
+    def _fetch_table_info(self, table_names: List[str], user_input: str) -> List[Dict[str, Any]]:
+        """
+        获取表的字段信息
+
+        Args:
+            table_names: 表名列表
+            user_input: 原始用户输入（用于推断表用途）
+
+        Returns:
+            data_sources 列表，每项包含 table_name, description, key_fields, field_descriptions
+        """
+        data_sources = []
+
+        for table_name in table_names:
+            print(f"  正在获取表 {table_name} 的字段信息...")
+
+            data_source = {
+                "table_name": table_name,
+                "description": "",
+                "table_type": "fact",  # 默认事实表
+                "key_fields": [],
+                "field_mappings": {},
+                "field_descriptions": {}
+            }
+
+            # 尝试从数据平台获取字段信息
+            if self.dp_client:
+                try:
+                    columns = self.dp_client.describe_table(table_name)
+                    print(f"    ✓ 获取到 {len(columns)} 个字段")
+
+                    # 提取字段名和类型
+                    key_fields = []
+                    field_descriptions = {}
+
+                    for col in columns:
+                        col_name = col.get("column_name", "")
+                        col_type = col.get("data_type", "")
+                        col_comment = col.get("comment", "")
+
+                        key_fields.append(col_name)
+
+                        # 构建字段描述
+                        desc = f"{col_type}"
+                        if col_comment:
+                            desc += f" - {col_comment}"
+                        field_descriptions[col_name] = desc
+
+                    data_source["key_fields"] = key_fields
+                    data_source["field_descriptions"] = field_descriptions
+
+                except Exception as e:
+                    print(f"    [WARN] 获取字段信息失败: {e}")
+                    # 如果获取失败，尝试使用LLM推断
+                    data_source = self._infer_table_info_with_llm(data_source, user_input)
+            else:
+                # 无数据平台客户端，使用LLM推断
+                data_source = self._infer_table_info_with_llm(data_source, user_input)
+
+            # 推断表用途和类型
+            data_source["description"] = self._infer_table_description(table_name, user_input)
+            data_source["table_type"] = self._infer_table_type(table_name)
+
+            data_sources.append(data_source)
+
+        return data_sources
+
+    def _infer_table_info_with_llm(self, data_source: Dict, user_input: str) -> Dict:
+        """使用LLM推断表的字段信息"""
+        if self.llm_client is None:
+            return data_source
+
+        table_name = data_source["table_name"]
+
+        prompt = f"""你是一位数据分析专家，需要根据表名和用户输入推断表的字段信息。
+
+表名：{table_name}
+用户输入：{user_input}
+
+请推断该表可能包含的字段（以JSON格式输出，不要附加任何解释）：
+{{
+  "key_fields": ["字段1", "字段2", "字段3", ...],
+  "field_descriptions": {{
+    "字段1": "字段1的含义",
+    "字段2": "字段2的含义",
+    ...
+  }}
+}}
+
+注意：
+- key_fields 是表的主要字段列表
+- field_descriptions 是字段的详细含义说明
+- 根据表名推断常见字段即可，不需要完全准确
+- 只输出JSON，不要输出其他内容"""
+
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            content = response.choices[0].message.content.strip()
+
+            # 提取JSON
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                data_source["key_fields"] = result.get("key_fields", data_source["key_fields"])
+                data_source["field_descriptions"] = result.get("field_descriptions", data_source["field_descriptions"])
+
+        except Exception as e:
+            print(f"    [WARN] LLM推断字段信息失败: {e}")
+
+        return data_source
+
+    def _infer_table_description(self, table_name: str, user_input: str) -> str:
+        """推断表的用途描述"""
+        # 从表名推断
+        table_name_lower = table_name.lower()
+
+        if "user" in table_name_lower and "page" in table_name_lower:
+            return "用户页面访问行为表，记录用户每次页面访问"
+        elif "user" in table_name_lower and "module" in table_name_lower:
+            return "用户模块访问行为表，记录用户每次模块曝光和点击"
+        elif "order" in table_name_lower:
+            return "订单事实表"
+        elif "user" in table_name_lower and "info" in table_name_lower:
+            return "用户维度表"
+        else:
+            return f"数据源表 {table_name}"
+
+    def _infer_table_type(self, table_name: str) -> str:
+        """推断表的类型"""
+        table_name_lower = table_name.lower()
+
+        if "dim_" in table_name_lower or "_dim_" in table_name_lower:
+            return "dimension"
+        elif "fact_as_dim" in table_name_lower:
+            return "fact_as_dimension"
+        else:
+            return "fact"
+
+    def _infer_metrics_and_dimensions(
+        self,
+        user_input: str,
+        meta_info: Dict[str, Any],
+        data_sources: List[Dict[str, Any]]
+    ) -> tuple:
+        """
+        使用LLM推断指标和维度
+
+        Returns:
+            (metrics, dimensions, confirmation_items)
+        """
+        if self.llm_client is None:
+            # 模拟模式：返回常见指标和维度
+            return self._infer_metrics_and_dimensions_fallback(meta_info, data_sources)
+
+        # 构建字段信息描述
+        fields_desc = []
+        for ds in data_sources:
+            fields_desc.append(f"表 {ds['table_name']} 的字段：{', '.join(ds['key_fields'][:20])}")
+
+        prompt = f"""你是一位数据分析专家，需要根据用户的自然语言描述和表结构，推断需要分析的指标和维度。
+
+用户输入：
+{user_input}
+
+看板信息：
+- 标题：{meta_info['title']}
+- 目标：{meta_info['goal']}
+
+数据源字段信息：
+{chr(10).join(fields_desc)}
+
+请推断需要分析的指标和维度（以JSON格式输出，不要附加任何解释）：
+{{
+  "metrics": [
+    {{
+      "name": "指标名称",
+      "description": "指标描述"
+    }}
+  ],
+  "dimensions": [
+    {{
+      "name": "维度名称"
+    }}
+  ],
+  "confirmation_items": [
+    {{
+      "category": "指标口径 | 维度粒度 | 数据源 | 其他",
+      "item": "需要确认的具体内容",
+      "risk_if_wrong": "如果搞错会有什么后果",
+      "suggested_value": "建议的值或方向（可选）"
+    }}
+  ]
+}}
+
+注意：
+- metrics 是根据用户输入和表字段推断的可能需要计算的指标
+- dimensions 是根据表字段推断的可能的分析维度
+- confirmation_items 是所有需要用户确认的内容（包括推断出的指标、维度、时间范围等）
+- 指标示例：DAU、页面访问次数、会话数、转化率等
+- 维度示例：日期、页面名称、模块名称、用户类型等
+- 只输出JSON，不要输出其他内容"""
+
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            content = response.choices[0].message.content.strip()
+
+            # 提取JSON
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                metrics = result.get("metrics", [])
+                dimensions = result.get("dimensions", [])
+                confirmation_items = result.get("confirmation_items", [])
+
+                print(f"  ✓ 推断到 {len(metrics)} 个指标, {len(dimensions)} 个维度")
+                return metrics, dimensions, confirmation_items
+
+        except Exception as e:
+            print(f"  [WARN] LLM推断指标维度失败: {e}")
+
+        # 失败时使用备用方案
+        return self._infer_metrics_and_dimensions_fallback(meta_info, data_sources)
+
+    def _infer_metrics_and_dimensions_fallback(
+        self,
+        meta_info: Dict[str, Any],
+        data_sources: List[Dict[str, Any]]
+    ) -> tuple:
+        """备用：基于规则推断指标和维度"""
+        metrics = []
+        dimensions = []
+        confirmation_items = []
+
+        # 根据看板类型推断常见指标
+        title = meta_info.get("title", "")
+
+        if "用户行为" in title or "用户分析" in title:
+            metrics = [
+                {"name": "DAU", "description": "日活跃用户数"},
+                {"name": "页面访问次数", "description": "用户访问页面的总次数"},
+                {"name": "会话数", "description": "用户会话总数"}
+            ]
+            dimensions = [
+                {"name": "日期"},
+                {"name": "页面名称"},
+                {"name": "模块名称"}
+            ]
+            confirmation_items.append({
+                "category": "指标口径",
+                "item": "DAU的定义（去重uid？去重device_id？）",
+                "risk_if_wrong": "口径不一致会导致数据不可比",
+                "suggested_value": "建议按 uid 去重"
+            })
+
+        elif "销售" in title or "运营" in title:
+            metrics = [
+                {"name": "GMV", "description": "成交总额"},
+                {"name": "订单数", "description": "订单总数"},
+                {"name": "客单价", "description": "平均订单金额"}
+            ]
+            dimensions = [
+                {"name": "日期"},
+                {"name": "商品类目"}
+            ]
+
+        else:
+            # 通用指标
+            metrics = [
+                {"name": "数据量", "description": "记录总数"}
+            ]
+            dimensions = [
+                {"name": "日期"}
+            ]
+
+        # 添加通用确认项
+        confirmation_items.append({
+            "category": "其他",
+            "item": "时间范围（默认最近30天？）",
+            "risk_if_wrong": "时间范围不符合预期会影响分析结论",
+            "suggested_value": "建议默认最近30天"
+        })
+
+        confirmation_items.append({
+            "category": "数据源",
+            "item": "表类型判断（事实表/维度表）",
+            "risk_if_wrong": "表类型错误会导致JOIN逻辑错误",
+            "suggested_value": "已根据表名自动推断，请确认"
+        })
+
+        return metrics, dimensions, confirmation_items
+
+    def _build_output(
+        self,
+        meta_info: Dict[str, Any],
+        data_sources: List[Dict[str, Any]],
+        metrics: List[Dict],
+        dimensions: List[Dict],
+        confirmation_items: List[Dict]
+    ) -> Dict[str, Any]:
+        """
+        构建最终的输出JSON
+
+        符合现有输入规范：
+        - dashboard_meta
+        - data_sources
+        - metrics_requirement
+        - dimensions_requirement
+        - filters_known
+        - additional_notes
+        """
+        output = {
+            "dashboard_meta": {
+                "title": meta_info.get("title", "数据分析看板"),
+                "audience": meta_info.get("audience", ""),
+                "goal": meta_info.get("goal", "")
+            },
+            "data_sources": data_sources,
+            "metrics_requirement": metrics,
+            "dimensions_requirement": dimensions,
+            "filters_known": [],
+            "additional_notes": "由自然语言自动转换生成，请确认各项内容是否正确。",
+            "confirmation_items": confirmation_items  # 额外添加确认项（Pipeline会处理）
+        }
+
+        return output
+
+    def save_output(self, output: Dict[str, Any], output_path: str):
+        """保存转换结果到文件"""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+
+        print(f"[SAVE] 转换结果已保存: {output_path}")
+
+
+def main():
+    """命令行入口"""
+    parser = argparse.ArgumentParser(description="自然语言转结构化JSON")
+    parser.add_argument("--input", "-i", help="自然语言输入文本")
+    parser.add_argument("--input-file", "-f", help="从文件读取自然语言输入")
+    parser.add_argument("--output", "-o", default="./output/nl_output.json", help="输出JSON文件路径")
+
+    args = parser.parse_args()
+
+    # 读取输入
+    if args.input_file:
+        input_path = Path(args.input_file)
+        if not input_path.exists():
+            print(f"❌ 输入文件不存在: {input_path}")
+            sys.exit(1)
+        with open(input_path, "r", encoding="utf-8") as f:
+            natural_language = f.read()
+    elif args.input:
+        natural_language = args.input
+    else:
+        print("❌ 请提供输入（--input 或 --input-file）")
+        parser.print_help()
+        sys.exit(1)
+
+    # 加载配置
+    config = load_config()
+    llm_config = config.get("llm", {})
+    dp_config = config.get("data_platform", {})
+
+    # 创建转换器
+    converter = NLConverter(llm_config, dp_config)
+
+    # 执行转换
+    result = converter.convert(natural_language)
+
+    # 保存结果
+    converter.save_output(result, args.output)
+
+    print(f"\n✅ 转换完成！可以使用以下命令继续：")
+    print(f"   python run_pipeline.py --input {args.output}")
+
+
+if __name__ == "__main__":
+    main()
