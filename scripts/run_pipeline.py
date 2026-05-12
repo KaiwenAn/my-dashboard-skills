@@ -11,6 +11,10 @@
     # 方式3：从文件读取自然语言
     python run_pipeline.py --natural-input-file input.txt --output ./output
 
+    # 指定运行模式（覆盖配置）
+    python run_pipeline.py --natural-input "..." --mode publish   # 强制推送模式
+    python run_pipeline.py --natural-input "..." --mode plan      # 强制方案模式
+
 依赖：
     pip install openai python-dotenv
 
@@ -142,6 +146,8 @@ def main():
     # 新增：自然语言输入参数
     parser.add_argument("--natural-input", "-n", help="自然语言输入（新增方式）")
     parser.add_argument("--natural-input-file", help="从文件读取自然语言输入")
+    parser.add_argument("--mode", "-m", choices=["plan", "publish"], help="运行模式：plan（仅方案）/ publish（推送），覆盖所有默认配置")
+    parser.add_argument("--no-sql-test", action="store_true", help="跳过 SQL 试跑校验")
 
     args = parser.parse_args()
 
@@ -207,6 +213,7 @@ def main():
         print("   --input <JSON文件>          # 原有方式")
         print("   --natural-input <自然语言>   # 新增：自然语言方式")
         print("   --natural-input-file <文件>  # 新增：从文件读取自然语言")
+        print("   --mode plan|publish          # 可选：指定运行模式")
         parser.print_help()
         sys.exit(1)
 
@@ -249,9 +256,110 @@ def main():
             if not user_input["data_platform_config"].get(key):
                 user_input["data_platform_config"][key] = data_platform_config[key]
 
-    # 确定运行模式
+    # ---- BI 推送模式判断（四层优先级） ----
+    # 优先级（高→低）：--mode 参数 > user_input["bi_config"] > NLConverter _mode_hint > config.json bi_platform.enabled
+
     bi_config = user_input.get("bi_config")
-    run_mode = RunMode.PUBLISH if bi_config else RunMode.PLAN
+    mode_source = ""
+
+    # P1: --mode 命令行参数（最高优先级）
+    if args.mode:
+        if args.mode == "publish":
+            bi_platform = config.get("bi_platform", {})
+            bi_config = {
+                "base_url": bi_platform.get("base_url"),
+                "space_id": bi_platform.get("space_id"),
+                "creator": bi_platform.get("creator"),
+            }
+            # 去除 None 值
+            bi_config = {k: v for k, v in bi_config.items() if v is not None}
+            if bi_config:
+                user_input["bi_config"] = bi_config
+            mode_source = f"命令行参数 --mode {args.mode}"
+        else:  # plan
+            bi_config = None
+            mode_source = f"命令行参数 --mode {args.mode}"
+
+    elif bi_config is not None:
+        # P2: 用户输入中的 bi_config（JSON 文件中显式提供）
+        # bi_config 已经在 user_input 中，直接使用
+        mode_source = "用户输入 bi_config"
+
+    else:
+        # P3: NLConverter 的 _mode_hint（自然语言关键词）
+        mode_hint = user_input.pop("_mode_hint", None)
+        if mode_hint:
+            if mode_hint == "publish":
+                bi_platform = config.get("bi_platform", {})
+                bi_config = {
+                    "base_url": bi_platform.get("base_url"),
+                    "space_id": bi_platform.get("space_id"),
+                    "creator": bi_platform.get("creator"),
+                }
+                bi_config = {k: v for k, v in bi_config.items() if v is not None}
+                if bi_config:
+                    user_input["bi_config"] = bi_config
+                    mode_source = f"自然语言关键词（推送），config.json bi_platform"
+            else:  # plan
+                bi_config = None
+                mode_source = "自然语言关键词（方案）"
+
+        else:
+            # P4: config.json bi_platform.enabled 开关（兜底）
+            bi_platform = config.get("bi_platform", {})
+            enabled = bi_platform.get("enabled", "plan")
+            if enabled == "publish":
+                bi_config = {
+                    "base_url": bi_platform.get("base_url"),
+                    "space_id": bi_platform.get("space_id"),
+                    "creator": bi_platform.get("creator"),
+                }
+                bi_config = {k: v for k, v in bi_config.items() if v is not None}
+                if bi_config:
+                    user_input["bi_config"] = bi_config
+                    mode_source = "config.json bi_platform.enabled = publish"
+                else:
+                    mode_source = "config.json bi_platform.enabled = publish（但 space_id/creator 未配置，回退 PLAN）"
+            else:
+                mode_source = "默认模式（plan）"
+
+    # 清除残留的 _mode_hint（安全兜底）
+    user_input.pop("_mode_hint", None)
+
+    run_mode = RunMode.PUBLISH if user_input.get("bi_config") else RunMode.PLAN
+    print(f"[MODE] 运行模式: {run_mode.name}（来源：{mode_source}）")
+
+    # ---- SQL 校验开关（三级优先级） ----
+    # 优先级（高→低）：user_input["enable_sql_test"] > --no-sql-test / NLConverter 关键词 > config.json sql_validation
+    # 默认启用（True），三层都是「关闭能力」
+    sql_test_source = ""
+    enable_sql_test_final = True  # 默认启用
+
+    # 最高优先级：user_input 中显式指定（JSON 文件输入场景）
+    if "enable_sql_test" in user_input:
+        enable_sql_test_final = bool(user_input["enable_sql_test"])
+        sql_test_source = "user_input 显式指定"
+    elif args.no_sql_test:
+        # P1: --no-sql-test 命令行参数
+        enable_sql_test_final = False
+        sql_test_source = "命令行参数 --no-sql-test"
+    else:
+        # P2: NLConverter 关键词检测
+        sql_test_hint = user_input.pop("_sql_test_hint", None)
+        if sql_test_hint is False:
+            enable_sql_test_final = False
+            sql_test_source = "自然语言关键词（跳过校验）"
+        else:
+            # P3: config.json sql_validation 兜底
+            enable_sql_test_final = bool(config.get("sql_validation", True))
+            sql_test_source = f"config.json sql_validation = {enable_sql_test_final}"
+
+    # 清除残留的 _sql_test_hint（安全兜底）
+    user_input.pop("_sql_test_hint", None)
+
+    # 写入最终值到 user_input（Pipeline 会从这里读取）
+    user_input["enable_sql_test"] = enable_sql_test_final
+    print(f"[SQL_TEST] SQL校验: {'启用' if enable_sql_test_final else '跳过'}（来源：{sql_test_source}）")
 
     pipeline = Pipeline(
         model_config=model_config,

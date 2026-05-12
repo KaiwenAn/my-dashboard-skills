@@ -103,10 +103,10 @@ python scripts/run_pipeline.py --natural-input-file input.txt --output ./output
 
 # 方式3：JSON文件输入（原有）
 python scripts/run_pipeline.py --input <需求JSON文件路径> --output <输出目录>
-```
 
-```bash
-python scripts/run_pipeline.py --input <需求JSON文件路径> --output <输出目录>
+# 指定运行模式（覆盖配置）
+python scripts/run_pipeline.py --natural-input "..." --mode publish   # 强制推送
+python scripts/run_pipeline.py --natural-input "..." --mode plan      # 强制方案
 ```
 
 ## 输出结果
@@ -149,9 +149,13 @@ Pipeline 执行完成后，会在指定输出目录生成：
     "token": "你的数据平台token"
   },
   "bi_platform": {
+    "enabled": "plan",
     "base_url": "https://api-smp.dt.mi.com",
-    "api_prefix": "/os"
+    "api_prefix": "/os",
+    "space_id": null,
+    "creator": null
   },
+  "sql_validation": true,
   "llm": {
     "model": "deepseek-ai/DeepSeek-V4-Flash",
     "api_key": "你的API Key",
@@ -171,6 +175,27 @@ Pipeline 执行完成后，会在指定输出目录生成：
 | 数据平台 token | `config.data_platform.token` > `DATA_PLATFORM_TOKEN` |
 | 数据平台 base_url | `config.data_platform.base_url` > `DATA_PLATFORM_BASE_URL` |
 | 数据平台 engine | `config.data_platform.engine` > 默认值 `Spark` |
+| **BI 推送模式** | `--mode 参数` > `user_input.bi_config` > `自然语言关键词` > `config.bi_platform.enabled` |
+| **SQL 校验开关** | `user_input.enable_sql_test` > `--no-sql-test / 自然语言关键词` > `config.sql_validation` |
+
+**BI 推送模式**有 4 种切换方式，优先级从高到低：
+
+| 优先级 | 方式 | 示例 |
+|--------|------|------|
+| 1（最高） | `--mode` 命令行参数 | `--mode publish` / `--mode plan` |
+| 2 | JSON 中的 `bi_config` | `{"bi_config": {"space_id": 123, "creator": "zhangsan"}}` |
+| 3 | 自然语言关键词 | 输入含"推送"/"发布" → PUBLISH，含"方案"/"仅方案" → PLAN |
+| 4（最低） | `config.json` 的 `bi_platform.enabled` | `"plan"`（默认）/ `"publish"` |
+
+**SQL 校验开关**有 3 种切换方式，优先级从高到低：
+
+| 优先级 | 方式 | 示例 |
+|--------|------|------|
+| 1（最高） | JSON 中的 `enable_sql_test` | `{"enable_sql_test": false}` |
+| 2 | `--no-sql-test` 参数 或 自然语言关键词 | `--no-sql-test`，或输入含"不校验"/"跳过验证" |
+| 3（最低） | `config.json` 的 `sql_validation` | `true`（默认）/ `false` |
+
+默认启用 SQL 校验。三层都是「关闭能力」，不会强制开启。
 
 **⚠️ 重要**：`data_platform.engine` 必须设为 `"Spark"`，不能用 `"Presto"`。
 

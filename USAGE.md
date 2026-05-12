@@ -330,9 +330,13 @@ Pipeline 会自动识别需要人工确认的事项，按风险排序：
     "token": "你的数据平台token"
   },
   "bi_platform": {
+    "enabled": "plan",
     "base_url": "https://api-smp.dt.mi.com",
-    "api_prefix": "/os"
+    "api_prefix": "/os",
+    "space_id": null,
+    "creator": null
   },
+  "sql_validation": true,
   "llm": {
     "model": "deepseek-ai/DeepSeek-V4-Flash",
     "temperature": 0.1
@@ -353,11 +357,32 @@ Pipeline 会自动识别需要人工确认的事项，按风险排序：
 1. **`data_platform.engine` 必须设为 `"Spark"`**
    - Presto 模式会触发 SparkSqlRewriter，导致 SQL 报 400 错误
 
-2. **BI 推送需要配置 `bi_config`**
-   - 只需提供 `space_id` 和 `creator`
-   - `datasource_id` 会自动获取
+2. **BI 推送模式切换（4 种方式，优先级从高到低）**
 
-3. **模型选择**
+   | 优先级 | 方式 | 示例 |
+   |--------|------|------|
+   | 1（最高） | `--mode` 命令行参数 | `--mode publish` / `--mode plan` |
+   | 2 | JSON 中的 `bi_config` | `{"bi_config": {"space_id": 123, "creator": "zhangsan"}}` |
+   | 3 | 自然语言关键词 | 输入含"推送"/"发布" → PUBLISH，含"方案"/"仅方案" → PLAN |
+   | 4（最低） | `config.json` 的 `bi_platform.enabled` | `"plan"`（默认）/ `"publish"` |
+
+   - 启用推送需在 `config.json` 中配置 `space_id` 和 `creator`
+   - `datasource_id` 会在推送时自动获取
+   - 默认 `enabled: "plan"`，只出方案不推送，向后兼容
+
+3. **SQL 校验开关（3 种方式，优先级从高到低）**
+
+   | 优先级 | 方式 | 示例 |
+   |--------|------|------|
+   | 1（最高） | JSON 中的 `enable_sql_test` | `{"enable_sql_test": false}` |
+   | 2 | `--no-sql-test` 参数 或 自然语言关键词 | `--no-sql-test`，或输入含"不校验"/"跳过验证" |
+   | 3（最低） | `config.json` 的 `sql_validation` | `true`（默认）/ `false` |
+
+   - 默认启用 SQL 校验（语义模型 Agent 会试跑 SQL）
+   - 三层都是「关闭能力」，不会强制开启
+   - 与 BI 推送模式完全解耦：可以在 PUBLISH 模式下跳过校验，也可在 PLAN 模式下强制校验
+
+4. **模型选择**
    - 默认：`deepseek-ai/DeepSeek-V4-Flash`（硅基流动）
    - 速度优先：DeepSeek-V3.2（2元/M tokens）
    - 质量优先：DeepSeek-V4-Flash（1元/M tokens）
@@ -459,4 +484,6 @@ Pipeline 会自动重试（最多3次），如果仍失败：
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| v1.1 | 2026-05-12 | BI 推送模式自动切换：新增 --mode 参数、自然语言关键词检测、config.json bi_platform.enabled 开关 |
+| v1.1.1 | 2026-05-12 | SQL 校验开关独立解耦：新增 --no-sql-test 参数、自然语言关键词检测、config.json sql_validation 开关 |
 | v1.0 | 2026-05-12 | 初始版本，支持 6 Agent 流水线 |

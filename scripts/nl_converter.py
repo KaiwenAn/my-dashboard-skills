@@ -160,6 +160,18 @@ class NLConverter:
             meta_info, data_sources, metrics, dimensions, confirmation_items
         )
 
+        # 检测自然语言中的模式关键词
+        mode_hint = self._detect_mode_hint(natural_language)
+        if mode_hint:
+            result["_mode_hint"] = mode_hint
+            print(f"  [MODE] 检测到模式关键词: {mode_hint}")
+
+        # 检测自然语言中的 SQL 校验关键词
+        sql_test_hint = self._detect_sql_test_hint(natural_language)
+        if sql_test_hint is not None:
+            result["_sql_test_hint"] = sql_test_hint
+            print(f"  [SQL_TEST] 检测到SQL校验关键词: enable={sql_test_hint}")
+
         print(f"\n{'='*60}")
         print("[NLConverter] 转换完成!")
         print(f"  看板标题: {result['dashboard_meta']['title']}")
@@ -170,6 +182,49 @@ class NLConverter:
         print(f"{'='*60}\n")
 
         return result
+
+    def _detect_mode_hint(self, text: str) -> Optional[str]:
+        """
+        检测自然语言中的运行模式关键词
+
+        Returns:
+            "publish" 或 "plan"，无匹配则返回 None
+        """
+        publish_keywords = ["推送", "发布", "publish"]
+        plan_keywords = ["方案", "仅方案", "plan"]
+
+        text_lower = text.lower()
+
+        for kw in publish_keywords:
+            if kw in text_lower:
+                return "publish"
+
+        for kw in plan_keywords:
+            if kw in text_lower:
+                return "plan"
+
+        return None
+
+    def _detect_sql_test_hint(self, text: str) -> Optional[bool]:
+        """
+        检测自然语言中是否要求关闭 SQL 校验
+
+        Returns:
+            False 表示关闭校验，None 表示未检测到关键词（保持默认）
+        """
+        disable_keywords = [
+            "不校验", "跳过校验", "跳过验证", "不验证", "不试跑",
+            "跳过试跑", "不需要校验", "无需校验", "不需要验证",
+            "无需验证", "跳过SQL", "nosqltest",
+        ]
+
+        text_lower = text.lower()
+
+        for kw in disable_keywords:
+            if kw in text_lower:
+                return False
+
+        return None
 
     def _extract_meta_info(self, text: str) -> Dict[str, Any]:
         """

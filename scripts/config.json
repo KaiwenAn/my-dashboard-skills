@@ -8,15 +8,19 @@
     "token": "62f6e3737750485ba1b7fdb0e6a65b15"
   },
   "bi_platform": {
+    "enabled": "publish",
     "base_url": "https://api-smp.dt.mi.com",
-    "api_prefix": "/os"
+    "api_prefix": "/os",
+    "space_id": "11319",
+    "creator": "ankaiwen1"
   },
   "llm": {
     "model": "deepseek-ai/DeepSeek-V4-Flash",
     "api_key": "sk-dognzwogtlckwuxwklipznmavgiytxahjncvwdqzfegtjfhn",
     "base_url": "https://api.siliconflow.cn/v1",
     "temperature": 0.1
-  }
+  },
+  "sql_validation": false
 }
 
 
