@@ -5,7 +5,7 @@
     "catalog": "iceberg_zjyprc_hadoop",
     "schema": "meta",
     "engine": "Spark",
-    "token": "62f6e3737750485ba1b7fdb0e6a65b15"
+    "token": "504c9f8b37c245b0b6a9f76ec18bd4f4"
   },
   "bi_platform": {
     "enabled": "publish",

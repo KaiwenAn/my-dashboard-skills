@@ -1,121 +1,93 @@
 [
   {
     "category": "指标口径",
-    "item": "DAU的计算口径：按uid去重计数还是按session_id去重计数",
-    "risk_if_wrong": "如果口径不一致会导致活跃用户数统计偏差",
-    "suggested_value": "建议按uid去重计数",
+    "item": "成本的计算方式：是否使用所有成本字段（charge_track、charge_use等）相加作为总成本？",
+    "risk_if_wrong": "如果错误理解成本字段，会导致所有成本相关指标计算错误",
+    "suggested_value": "确认使用所有成本字段相加作为总成本",
     "_source_agent": "requirements_parser"
   },
   {
     "category": "指标口径",
-    "item": "会话时长的计算逻辑：如何通过e_ts字段计算会话时长",
-    "risk_if_wrong": "会话时长计算错误会影响用户行为分析的准确性",
-    "suggested_value": "建议按session_id分组，计算最大e_ts与最小e_ts的差值，需要确认e_ts的时间单位",
-    "_source_agent": "requirements_parser"
-  },
-  {
-    "category": "指标口径",
-    "item": "关键用户(is_kp_user)的具体定义标准",
-    "risk_if_wrong": "关键用户定义不清晰会影响用户分层分析的准确性",
-    "suggested_value": "需要明确is_kp_user字段的取值含义（如'是'/'否'或其他编码）",
-    "_source_agent": "requirements_parser"
-  },
-  {
-    "category": "指标口径",
-    "item": "有效访问(is_valid)的具体判定标准",
-    "risk_if_wrong": "无效访问过滤不准确会影响数据分析质量",
-    "suggested_value": "需要明确is_valid字段的取值含义和判定逻辑",
-    "_source_agent": "requirements_parser"
-  },
-  {
-    "category": "指标口径",
-    "item": "页面停留时长的计算逻辑：是否需要考虑页面跳转时间差",
-    "risk_if_wrong": "停留时长计算不准确会影响页面效果评估",
-    "suggested_value": "当前表结构可能无法准确计算页面停留时长，建议确认计算可行性",
+    "item": "可优化事件的判断标准：opt_flg字段的具体含义和可优化事件的判断条件是什么？",
+    "risk_if_wrong": "如果可优化事件识别错误，会导致优化机会分析完全偏离",
+    "suggested_value": "确认opt_flg字段的含义和可优化事件的判断标准",
     "_source_agent": "requirements_parser"
   },
   {
     "category": "SQL逻辑",
-    "item": "平均会话时长的窗口函数实现方式是否正确",
-    "risk_if_wrong": "窗口函数使用不当可能导致会话时长计算错误",
-    "suggested_value": "建议验证窗口函数在聚合场景下的正确性",
+    "item": "成本字段的COALESCE处理是否合理？当前将所有NULL值转为0，可能影响成本计算的准确性",
+    "risk_if_wrong": "如果某些成本字段NULL表示无成本，转为0是正确的；如果NULL表示数据缺失，转为0会导致计算错误",
+    "suggested_value": "确认各成本字段NULL值的业务含义",
+    "_source_agent": "semantic_model"
+  },
+  {
+    "category": "JOIN方式",
+    "item": "是否需要同时关联date字段确保时间一致性？当前仅通过event_guid关联，可能存在跨日期数据关联风险",
+    "risk_if_wrong": "如果两个表的日期不匹配，会导致成本数据与可优化标识错位",
+    "suggested_value": "建议在ON条件中增加日期关联：AND ec.date = CAST(oe.date AS INT)",
     "_source_agent": "semantic_model"
   },
   {
     "category": "数据源",
-    "item": "数据时间范围：需要分析哪个时间段的数据",
-    "risk_if_wrong": "时间范围选择不当会影响分析结论的时效性",
-    "suggested_value": "建议默认最近30天",
-    "_source_agent": "requirements_parser"
-  },
-  {
-    "category": "数据源",
-    "item": "Part 0字段的具体含义和用途",
-    "risk_if_wrong": "不了解该字段含义可能导致数据使用错误",
-    "suggested_value": "需要明确Part 0字段的业务含义",
+    "item": "两个表的关联方式：是否通过event_guid字段进行INNER JOIN关联？是否需要同时关联date字段？",
+    "risk_if_wrong": "关联错误会导致数据不匹配，分析结果失真",
+    "suggested_value": "确认通过event_guid字段关联，建议同时关联date字段确保时间一致性",
     "_source_agent": "requirements_parser"
   },
   {
     "category": "数据质量",
-    "item": "session_id字段的完整性和唯一性",
-    "risk_if_wrong": "session_id不完整或重复会影响会话相关指标的准确性",
-    "suggested_value": "建议验证session_id的数据质量",
+    "item": "两个表的date字段类型不同：成本表是int类型，可优化事件表是string类型，需要确认如何处理类型转换",
+    "risk_if_wrong": "类型不匹配会导致关联失败或数据错误",
+    "suggested_value": "建议统一date字段类型或进行类型转换",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "数据质量",
+    "item": "opt_flg字段的可优化判断条件是否准确？当前使用 IS NOT NULL AND != '' AND != 'N' 作为可优化条件",
+    "risk_if_wrong": "如果可优化条件判断错误，会导致可优化成本计算不准确",
+    "suggested_value": "确认opt_flg字段的具体取值含义和可优化判断标准",
     "_source_agent": "semantic_model"
   },
   {
     "category": "维度粒度",
-    "item": "时间分析粒度：按天、周、月还是其他时间维度",
-    "risk_if_wrong": "时间粒度选择不当会影响趋势分析的准确性",
-    "suggested_value": "建议默认按天分析，支持按周、月聚合",
+    "item": "部门层级字段的描述可能存在错误：bu_dept1_name到bu_dept5_name的描述都是'业务归属一级部门'，需要确认正确的层级关系",
+    "risk_if_wrong": "部门层级关系错误会影响下钻分析的准确性",
+    "suggested_value": "确认bu_dept1_name到bu_dept5_name的正确层级关系描述",
     "_source_agent": "requirements_parser"
-  },
-  {
-    "category": "维度粒度",
-    "item": "模块层级分析深度：需要分析到哪一级模块（sub_sub_sub_module）",
-    "risk_if_wrong": "层级过深或过浅都会影响分析效果",
-    "suggested_value": "建议支持多级钻取分析，但默认展示到合理层级",
-    "_source_agent": "requirements_parser"
-  },
-  {
-    "category": "过滤条件",
-    "item": "是否需要添加默认的时间范围过滤",
-    "risk_if_wrong": "无时间过滤可能导致查询数据量过大",
-    "suggested_value": "建议在图表层设置默认时间范围（如最近30天）",
-    "_source_agent": "semantic_model"
   },
   {
     "category": "图表类型",
-    "item": "平均会话时长展示方式：当前用折线图展示趋势，是否需要增加分布直方图展示时长分布特征",
-    "risk_if_wrong": "仅展示平均值可能掩盖极端值影响，无法反映真实分布情况",
-    "suggested_value": "建议增加会话时长分布直方图，与趋势图配合分析",
+    "item": "可优化成本占比分布使用环形图展示，如果opt_flg分类超过6个，是否需要改用条形图？",
+    "risk_if_wrong": "环形图分类过多会导致可读性下降，难以识别主要优化类型",
+    "suggested_value": "建议根据实际分类数量决定，超过6个分类时改用条形图",
+    "_source_agent": "chart_design"
+  },
+  {
+    "category": "布局",
+    "item": "总成本和可优化成本趋势图并列展示，是否需要增加对比图表（如双轴图）直接展示占比趋势？",
+    "risk_if_wrong": "并列展示需要用户自行对比，可能不够直观",
+    "suggested_value": "可考虑增加一个占比趋势折线图作为补充",
     "_source_agent": "chart_design"
   },
   {
     "category": "维度选择",
-    "item": "部门层级分析深度：当前使用一级部门，是否需要支持多级部门下钻分析",
-    "risk_if_wrong": "一级部门粒度可能过粗，无法满足精细化部门分析需求",
-    "suggested_value": "建议支持部门层级下钻，但默认展示一级部门聚合数据",
+    "item": "业务部门和技术部门分析分开展示，是否需要增加交叉分析图表（如桑基图）展示部门间关系？",
+    "risk_if_wrong": "分开分析可能无法体现业务部门与技术部门之间的关联关系",
+    "suggested_value": "可根据用户需求考虑增加部门关联分析图表",
     "_source_agent": "chart_design"
   },
   {
-    "category": "其他",
-    "item": "e_ts字段的时间单位（秒/毫秒/微秒）",
-    "risk_if_wrong": "时间单位错误会导致时长计算严重偏差",
-    "suggested_value": "需要确认e_ts的时间单位以便正确计算会话时长",
+    "category": "时间范围",
+    "item": "近30天的具体时间范围定义：是否包含当天？使用滚动30天还是固定时间段？",
+    "risk_if_wrong": "时间范围错误会导致数据量不准确",
+    "suggested_value": "确认使用滚动30天（包含当天）",
     "_source_agent": "requirements_parser"
   },
   {
-    "category": "布局设计",
-    "item": "模块层级下钻深度：当前设计支持到三级模块，是否需要支持四级模块下钻",
-    "risk_if_wrong": "层级过深可能导致图表过于复杂，层级过浅可能无法满足深度分析需求",
-    "suggested_value": "建议默认展示到二级模块，支持手动下钻到更细粒度",
-    "_source_agent": "chart_design"
-  },
-  {
     "category": "交互设计",
-    "item": "用户类型与模块的交叉分析：当前为独立图表，是否需要增加交叉分析图表",
-    "risk_if_wrong": "独立分析可能无法发现关键用户在不同模块的行为差异",
-    "suggested_value": "建议增加关键用户在各模块的访问行为对比图表",
+    "item": "部门排名图表支持下钻到二级、三级部门，是否需要限制下钻深度避免数据过于分散？",
+    "risk_if_wrong": "下钻过深可能导致单个部门数据量过少，分析价值降低",
+    "suggested_value": "建议限制下钻到三级部门，确保每个层级都有足够的数据支撑",
     "_source_agent": "chart_design"
   }
 ]

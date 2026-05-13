@@ -18,6 +18,7 @@ import re
 import time
 import argparse
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -149,6 +150,11 @@ class NLConverter:
         """
         调用 LLM，统一封装超时+重试逻辑
 
+        - 把 HTTP 请求放在独立线程中执行，支持 Ctrl+C 中断
+        - 每次调用有独立超时（读超时 5 分钟），超时后自动重试
+        - 最多重试 3 次，渐进等待 10s/20s/30s
+        - Ctrl+C 随时可终止
+
         Args:
             prompt: 用户 prompt（不含 system role）
             temperature: 温度参数
@@ -158,19 +164,20 @@ class NLConverter:
 
         Raises:
             Exception: 重试耗尽后仍失败则抛出
+            KeyboardInterrupt: 用户按 Ctrl+C 时抛出
         """
         if self.llm_client is None:
             raise RuntimeError("LLM 客户端未初始化")
 
         max_retries = 3
+
         for attempt in range(1, max_retries + 1):
             try:
-                response = self.llm_client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                )
-                return response.choices[0].message.content.strip()
+                return self._llm_chat_once(prompt, temperature)
+            except KeyboardInterrupt:
+                _init_logger()
+                logger.warning("  ⛔ 用户中断，退出")
+                raise
             except Exception as e:
                 err_name = type(e).__name__
                 is_network_error = any(
@@ -181,12 +188,50 @@ class NLConverter:
                     wait = attempt * 10
                     _init_logger()
                     logger.warning(
-                        f"  ⚠️ LLM 调用网络错误({err_name})，{wait}s 后重试 ({attempt}/{max_retries})..."
+                        f"  ⚠️ LLM 调用网络错误({err_name})，{wait}s 后重试 ({attempt}/{max_retries})，"
+                        f"随时可按 Ctrl+C 终止..."
                     )
-                    time.sleep(wait)
-                    continue
-                # 非网络错误或重试耗尽，直接抛出
-                raise
+                    # 可中断的 sleep：每 1 秒检查一次中断标志
+                    for _ in range(wait):
+                        time.sleep(1)
+                else:
+                    raise
+
+    def _llm_chat_once(self, prompt: str, temperature: float) -> str:
+        """
+        单次 LLM 调用，运行在独立线程中，支持 Ctrl+C 中断。
+        读超时 5 分钟，超时后抛出 TimeoutError。
+        """
+        result_container = {}
+        exc_container = {}
+
+        def _call():
+            try:
+                response = self.llm_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                )
+                result_container["content"] = response.choices[0].message.content.strip()
+            except Exception as e:
+                exc_container["exc"] = e
+
+        thread = threading.Thread(target=_call, daemon=True)
+        thread.start()
+
+        # 等待线程完成，最多等 5 分钟（读超时）
+        thread.join(timeout=300)
+
+        if thread.is_alive():
+            # 线程还在跑（读超时），强制结束
+            _init_logger()
+            logger.warning("  ⏱️ LLM 调用读超时（5分钟），视为网络错误")
+            raise TimeoutError("LLM 调用读超时（5分钟）")
+
+        if exc_container:
+            raise exc_container["exc"]
+
+        return result_container["content"]
 
     def convert(self, natural_language: str) -> Dict[str, Any]:
         """
