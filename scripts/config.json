@@ -11,13 +11,13 @@
     "enabled": "publish",
     "base_url": "https://api-smp.dt.mi.com",
     "api_prefix": "/os",
-    "space_id": "11319",
+    "space_id": "11169",
     "creator": "ankaiwen1"
   },
   "llm": {
-    "model": "deepseek-ai/DeepSeek-V4-Flash",
-    "api_key": "sk-dognzwogtlckwuxwklipznmavgiytxahjncvwdqzfegtjfhn",
-    "base_url": "https://api.siliconflow.cn/v1",
+    "model": "xiaomi/deepseek-v3.1",
+    "api_key": "sk-KTFFrM2IYn9azgip4FQm7tHnMg1CCZwH7DWD6I3FkvtuMUfQ",
+    "base_url": "https://api.llm.mioffice.cn/v1",
     "temperature": 0.1
   },
   "sql_validation": false

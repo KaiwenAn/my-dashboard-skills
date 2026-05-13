@@ -15,10 +15,13 @@
 import os
 import json
 import re
+import time
 import argparse
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+import httpx
 
 # 添加skill目录到Python路径
 SKILL_DIR = Path(__file__).parent
@@ -108,7 +111,8 @@ class NLConverter:
             import openai
             self.llm_client = openai.OpenAI(
                 api_key=self.llm_config.get("api_key"),
-                base_url=self.llm_config.get("base_url")
+                base_url=self.llm_config.get("base_url"),
+                timeout=httpx.Timeout(300.0, connect=10.0),  # 读超时5分钟，连接超时10秒
             )
             self.model = self.llm_config.get("model", "deepseek-ai/DeepSeek-V4-Flash")
             self.temperature = self.llm_config.get("temperature", 0.1)
@@ -140,6 +144,49 @@ class NLConverter:
         except Exception as e:
             print(f"[WARN] 数据平台客户端初始化失败: {e}")
             self.dp_client = None
+
+    def _llm_chat(self, prompt: str, temperature: float = 0.1) -> str:
+        """
+        调用 LLM，统一封装超时+重试逻辑
+
+        Args:
+            prompt: 用户 prompt（不含 system role）
+            temperature: 温度参数
+
+        Returns:
+            模型返回的文本内容
+
+        Raises:
+            Exception: 重试耗尽后仍失败则抛出
+        """
+        if self.llm_client is None:
+            raise RuntimeError("LLM 客户端未初始化")
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = self.llm_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                err_name = type(e).__name__
+                is_network_error = any(
+                    kw in err_name.lower()
+                    for kw in ["timeout", "connection", "network", "connect", "read"]
+                )
+                if is_network_error and attempt < max_retries:
+                    wait = attempt * 10
+                    _init_logger()
+                    logger.warning(
+                        f"  ⚠️ LLM 调用网络错误({err_name})，{wait}s 后重试 ({attempt}/{max_retries})..."
+                    )
+                    time.sleep(wait)
+                    continue
+                # 非网络错误或重试耗尽，直接抛出
+                raise
 
     def convert(self, natural_language: str) -> Dict[str, Any]:
         """
@@ -290,13 +337,7 @@ class NLConverter:
 - 只输出JSON，不要输出其他内容"""
 
         try:
-            response = self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
-            )
-            content = response.choices[0].message.content.strip()
-
+            content = self._llm_chat(prompt)
             # 提取JSON
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
@@ -511,12 +552,7 @@ class NLConverter:
 7. 只输出 JSON，不要输出其他内容"""
 
         try:
-            response = self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
-            )
-            content = response.choices[0].message.content.strip()
+            content = self._llm_chat(prompt)
 
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
@@ -596,13 +632,7 @@ class NLConverter:
 - 只输出JSON，不要输出其他内容"""
 
         try:
-            response = self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
-            )
-            content = response.choices[0].message.content.strip()
-
+            content = self._llm_chat(prompt)
             # 提取JSON
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
@@ -707,13 +737,7 @@ class NLConverter:
 - 只输出JSON，不要输出其他内容"""
 
         try:
-            response = self.llm_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
-            )
-            content = response.choices[0].message.content.strip()
-
+            content = self._llm_chat(prompt)
             # 提取JSON
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:

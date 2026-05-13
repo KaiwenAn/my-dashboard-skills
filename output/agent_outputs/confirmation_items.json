@@ -1,0 +1,121 @@
+[
+  {
+    "category": "指标口径",
+    "item": "DAU的计算口径：按uid去重计数还是按session_id去重计数",
+    "risk_if_wrong": "如果口径不一致会导致活跃用户数统计偏差",
+    "suggested_value": "建议按uid去重计数",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "指标口径",
+    "item": "会话时长的计算逻辑：如何通过e_ts字段计算会话时长",
+    "risk_if_wrong": "会话时长计算错误会影响用户行为分析的准确性",
+    "suggested_value": "建议按session_id分组，计算最大e_ts与最小e_ts的差值，需要确认e_ts的时间单位",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "指标口径",
+    "item": "关键用户(is_kp_user)的具体定义标准",
+    "risk_if_wrong": "关键用户定义不清晰会影响用户分层分析的准确性",
+    "suggested_value": "需要明确is_kp_user字段的取值含义（如'是'/'否'或其他编码）",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "指标口径",
+    "item": "有效访问(is_valid)的具体判定标准",
+    "risk_if_wrong": "无效访问过滤不准确会影响数据分析质量",
+    "suggested_value": "需要明确is_valid字段的取值含义和判定逻辑",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "指标口径",
+    "item": "页面停留时长的计算逻辑：是否需要考虑页面跳转时间差",
+    "risk_if_wrong": "停留时长计算不准确会影响页面效果评估",
+    "suggested_value": "当前表结构可能无法准确计算页面停留时长，建议确认计算可行性",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "SQL逻辑",
+    "item": "平均会话时长的窗口函数实现方式是否正确",
+    "risk_if_wrong": "窗口函数使用不当可能导致会话时长计算错误",
+    "suggested_value": "建议验证窗口函数在聚合场景下的正确性",
+    "_source_agent": "semantic_model"
+  },
+  {
+    "category": "数据源",
+    "item": "数据时间范围：需要分析哪个时间段的数据",
+    "risk_if_wrong": "时间范围选择不当会影响分析结论的时效性",
+    "suggested_value": "建议默认最近30天",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "数据源",
+    "item": "Part 0字段的具体含义和用途",
+    "risk_if_wrong": "不了解该字段含义可能导致数据使用错误",
+    "suggested_value": "需要明确Part 0字段的业务含义",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "数据质量",
+    "item": "session_id字段的完整性和唯一性",
+    "risk_if_wrong": "session_id不完整或重复会影响会话相关指标的准确性",
+    "suggested_value": "建议验证session_id的数据质量",
+    "_source_agent": "semantic_model"
+  },
+  {
+    "category": "维度粒度",
+    "item": "时间分析粒度：按天、周、月还是其他时间维度",
+    "risk_if_wrong": "时间粒度选择不当会影响趋势分析的准确性",
+    "suggested_value": "建议默认按天分析，支持按周、月聚合",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "维度粒度",
+    "item": "模块层级分析深度：需要分析到哪一级模块（sub_sub_sub_module）",
+    "risk_if_wrong": "层级过深或过浅都会影响分析效果",
+    "suggested_value": "建议支持多级钻取分析，但默认展示到合理层级",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "过滤条件",
+    "item": "是否需要添加默认的时间范围过滤",
+    "risk_if_wrong": "无时间过滤可能导致查询数据量过大",
+    "suggested_value": "建议在图表层设置默认时间范围（如最近30天）",
+    "_source_agent": "semantic_model"
+  },
+  {
+    "category": "图表类型",
+    "item": "平均会话时长展示方式：当前用折线图展示趋势，是否需要增加分布直方图展示时长分布特征",
+    "risk_if_wrong": "仅展示平均值可能掩盖极端值影响，无法反映真实分布情况",
+    "suggested_value": "建议增加会话时长分布直方图，与趋势图配合分析",
+    "_source_agent": "chart_design"
+  },
+  {
+    "category": "维度选择",
+    "item": "部门层级分析深度：当前使用一级部门，是否需要支持多级部门下钻分析",
+    "risk_if_wrong": "一级部门粒度可能过粗，无法满足精细化部门分析需求",
+    "suggested_value": "建议支持部门层级下钻，但默认展示一级部门聚合数据",
+    "_source_agent": "chart_design"
+  },
+  {
+    "category": "其他",
+    "item": "e_ts字段的时间单位（秒/毫秒/微秒）",
+    "risk_if_wrong": "时间单位错误会导致时长计算严重偏差",
+    "suggested_value": "需要确认e_ts的时间单位以便正确计算会话时长",
+    "_source_agent": "requirements_parser"
+  },
+  {
+    "category": "布局设计",
+    "item": "模块层级下钻深度：当前设计支持到三级模块，是否需要支持四级模块下钻",
+    "risk_if_wrong": "层级过深可能导致图表过于复杂，层级过浅可能无法满足深度分析需求",
+    "suggested_value": "建议默认展示到二级模块，支持手动下钻到更细粒度",
+    "_source_agent": "chart_design"
+  },
+  {
+    "category": "交互设计",
+    "item": "用户类型与模块的交叉分析：当前为独立图表，是否需要增加交叉分析图表",
+    "risk_if_wrong": "独立分析可能无法发现关键用户在不同模块的行为差异",
+    "suggested_value": "建议增加关键用户在各模块的访问行为对比图表",
+    "_source_agent": "chart_design"
+  }
+]

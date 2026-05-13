@@ -41,6 +41,15 @@
 cd c:\Users\Kai\.workbuddy\skills\dashboard-agent\my-dashboard-skills
 
 # 执行 Pipeline
+```
+命令行直接输入
+python scripts/run_pipeline.py --natural-input "帮我做一个用户行为分析看板，数据源是iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view"
+
+或从文件读取
+echo "帮我做一个用户行为分析看板，数据源是iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view" > input.txt
+python scripts/run_pipeline.py --natural-input-file input.txt
+
+或执行规范化的json文件
 python scripts/run_pipeline.py --input references/examples/ecommerce_daily.json --output ./output
 ```
 
@@ -349,15 +358,24 @@ Pipeline 会自动识别需要人工确认的事项，按风险排序：
     "enabled": "plan",
     "base_url": "https://api-smp.dt.mi.com",
     "api_prefix": "/os",
-    "space_id": null,
-    "creator": null
+    "space_id": "你的空间ID",
+    "creator": "员工邮箱前缀"
   },
-  "sql_validation": true,
+  "sql_validation": false,
   "llm": {
     "model": "deepseek-ai/DeepSeek-V4-Flash",
     "temperature": 0.1
   }
 }
+注：
+1. 小米网关
+  ① baseurl：https://api.llm.mioffice.cn/v1
+  ② model：
+      xiaomi/deepseek-v3.1
+      xiaomi/Qwen3-235B-A22B-Instruct-2507
+2. 硅基流动baseurl：https://api.siliconflow.cn/v1
+  ① model:
+      deepseek-ai/DeepSeek-V4-Flash
 ```
 
 ### 环境变量

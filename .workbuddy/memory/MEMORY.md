@@ -53,6 +53,20 @@ python run_pipeline.py --natural-input-file input.txt --output ./output
 - `_infer_metrics_and_dimensions()` - LLM推断指标维度
 - `_build_output()` - 构建标准JSON输出
 
+### 2026-05-13: requirements-parser v0.4 — field_name 字段
+**问题**: dimensions_spec 只有 name（业务名如"日期"、"地区"），下游语义模型Agent需要实际字段名（如"pay_time"、"province"）才能生成 SQL
+
+**解决方案**: dimensions_spec 增加 `field_name` 字段（必填），要求从 key_fields/field_descriptions 映射得出
+
+**修改**: `prompts/requirements-parser-agent.md` v0.3→v0.4
+- 输出规范 dimensions_spec 增加 field_name 字段
+- 输出约束要求 field_name 必须包含且可映射
+- Step3 增加"业务名→字段名映射"规则及示例
+- 示例更新：日期→pay_time、商品类目→category_id、地区→province
+- 质量守则增加 field_name 无法映射时的标记规则
+
+**设计原则**: name=业务维度名（中文展示用），field_name=实际表字段名（SQL生成用），两者解耦
+
 ### 2026-05-12: 表字段自动拉取功能
 **问题**: LLM 生成 SQL 时自己猜字段名，容易出错
 

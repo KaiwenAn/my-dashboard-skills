@@ -1,0 +1,15 @@
+{
+  "pipeline_id": "pipe_1778642959",
+  "status": "completed",
+  "total_duration_ms": 757244,
+  "total_duration_min": 12.620733333333334,
+  "step_durations": {
+    "requirements_parser": 86078,
+    "semantic_model": 100150,
+    "bi_push": 1220,
+    "chart_design": 94366,
+    "instruction_generator": 62645,
+    "solution_generator": 204722
+  },
+  "confirmation_items_count": 17
+}
