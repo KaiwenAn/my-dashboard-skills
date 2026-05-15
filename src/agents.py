@@ -9,6 +9,7 @@ Agent 模块：加载 System Prompt 并执行 Agent
 """
 
 import os
+import re
 import json
 from enum import Enum
 from .llm import LLMClient
@@ -253,6 +254,22 @@ class SemanticModelAgent(BaseAgent):
         req_output = context.get("requirements_parser_output", {})
         msg = f"请基于以下需求解析结果，生成语义模型 SQL 和配置：\n\n```json\n{json.dumps(req_output, ensure_ascii=False, indent=2)}\n```"
 
+        # 注入数据源字段清单（来自 _fetch_table_columns 的 DESCRIBE 结果）
+        # 让 LLM 直接看到准确的字段类型 + 注释,避免凭名称猜类型导致试跑失败
+        column_types = context.get("column_types") or {}
+        if column_types:
+            msg += "\n\n---\n**数据源字段清单（请严格按此类型生成 SQL,不要凭名称猜类型）：**\n"
+            for table_name, fields in column_types.items():
+                msg += f"\n**`{table_name}`**\n"
+                for field_name, field_info in fields.items():
+                    data_type = field_info.get("data_type", "UNKNOWN")
+                    comment = field_info.get("comment", "")
+                    is_key = " 🔑" if field_info.get("is_key_field") else ""
+                    line = f"- `{field_name}` ({data_type}){is_key}"
+                    if comment:
+                        line += f" — {comment}"
+                    msg += line + "\n"
+
         # 注入交叉校验警告
         warnings = context.get("_cross_validate_warnings", [])
         if warnings:
@@ -264,11 +281,31 @@ class SemanticModelAgent(BaseAgent):
         sql_test_error = context.get("_sql_test_error")
         if sql_test_error:
             msg += f"\n\n**⚠️ 上次生成的SQL试跑失败，请修正以下错误后重新生成：**\n{sql_test_error}"
+            # 针对常见嵌套错误,额外给定向修复指引（prompt 红线已说明,这里强化提醒）
+            err_lower = sql_test_error.lower()
+            if "window function" in err_lower and "aggregate function" in err_lower:
+                msg += (
+                    "\n\n**🔧 定向修复指引**：错误属于"
+                    "「窗口函数嵌套在聚合函数内」(如 `SUM(ROW_NUMBER() OVER ...)`)。"
+                    "**必须用子查询拆开**：内层 SELECT 写窗口、外层 SELECT 写聚合。"
+                    "参考 prompt §3.5 反模式 B 的正确示例。"
+                )
+            elif "aggregate function in" in err_lower and "another aggregate function" in err_lower:
+                msg += (
+                    "\n\n**🔧 定向修复指引**：错误属于"
+                    "「聚合函数嵌套在聚合函数内」(如 `SUM(COUNT(...))`)。"
+                    "**必须用子查询拆开**：内层 SELECT 写第一层聚合、外层 SELECT 写第二层聚合。"
+                    "参考 prompt §3.5 反模式 A 的正确示例。"
+                )
 
         msg += self._format_revision_context(context)
         return msg
 
     def validate_output(self, output: dict) -> None:
+        # 兜底：LLM 偶发漏写 depends_on，从 sql_expression 自动提取字段补全
+        # 这是治标策略；prompt 层已强调必填，但长上下文里 LLM 仍可能漏
+        self._auto_fix_depends_on(output)
+
         if "semantic_models" not in output or len(output["semantic_models"]) < 1:
             raise ValueError("语义模型输出至少需要 1 个 semantic_model")
         for model in output["semantic_models"]:
@@ -278,7 +315,7 @@ class SemanticModelAgent(BaseAgent):
                 raise ValueError(f"模型 '{model.get('model_name', '?')}' 至少需要 1 个维度")
             if "metrics" not in model or len(model["metrics"]) < 1:
                 raise ValueError(f"模型 '{model.get('model_name', '?')}' 至少需要 1 个指标")
-            # 检查衍生指标的 depends_on
+            # 检查衍生指标的 depends_on（理论上 _auto_fix_depends_on 已经补全；这里是最终防线）
             for metric in model["metrics"]:
                 if metric.get("aggregation") == "自定义" and not metric.get("depends_on"):
                     raise ValueError(
@@ -389,6 +426,39 @@ class SemanticModelAgent(BaseAgent):
             for f in failed:
                 error_msg = f['error']['message'] if f.get('error') else '未知错误'
                 logger.warning(f"  - {f['model_name']}: {error_msg}")
+
+            # ---- 调试转储（临时,用于诊断 SQL 试跑反复失败的根因）----
+            try:
+                from pathlib import Path as _Path
+                from datetime import datetime as _datetime
+                _diag_dir = _Path(__file__).resolve().parents[1] / "poc" / "diag"
+                _diag_dir.mkdir(parents=True, exist_ok=True)
+                _ts = _datetime.now().strftime("%Y%m%d_%H%M%S")
+                _dump = {
+                    "timestamp": _ts,
+                    "retry_count": retry_count,
+                    "max_retry": max_retry,
+                    "failed_models": [
+                        {
+                            "model_name": _f["model_name"],
+                            "error_message": (_f.get("error") or {}).get("message", ""),
+                            "sql": next(
+                                (m.get("sql", "") for m in (output or {}).get("semantic_models", [])
+                                 if m.get("model_name") == _f["model_name"]),
+                                "",
+                            ),
+                        }
+                        for _f in failed
+                    ],
+                    "last_sql_test_error_injected": context.get("_sql_test_error", ""),
+                }
+                (_diag_dir / f"sql_fail_attempt{retry_count}_{_ts}.json").write_text(
+                    json.dumps(_dump, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+                logger.warning(f"[DIAG] 失败转储 → poc/diag/sql_fail_attempt{retry_count}_{_ts}.json")
+            except Exception as _e:
+                logger.warning(f"[DIAG] 转储失败 SQL 出错: {_e}")
+            # ---- 调试转储结束 ----
 
             if retry_count >= max_retry:
                 # 已达最大重试次数
@@ -535,6 +605,96 @@ class SemanticModelAgent(BaseAgent):
             pass
 
         return []
+
+    # SQL 内置/常见函数与关键字白名单 —— 提取 depends_on 时排除
+    _SQL_KEYWORDS_BLACKLIST = frozenset({
+        # 聚合 / 算子
+        "sum", "count", "avg", "min", "max", "distinct", "nullif", "coalesce", "cast",
+        # 条件 / 控制流
+        "case", "when", "then", "else", "end", "if",
+        # 逻辑运算
+        "and", "or", "not", "is", "in", "between", "like", "exists",
+        # 字面量
+        "null", "true", "false",
+        # 时间相关
+        "date", "datetime", "timestamp", "current_date", "current_timestamp",
+        "interval", "year", "month", "day", "hour", "minute", "second",
+        "date_add", "date_sub", "date_format", "datediff", "to_date",
+        # SQL 关键字
+        "as", "from", "where", "select", "group", "by", "order", "having",
+        "limit", "offset", "join", "left", "right", "inner", "outer", "on",
+        "union", "all", "with", "over", "partition", "rows", "range",
+    })
+
+    @classmethod
+    def _extract_field_refs(cls, sql_expr: str) -> list:
+        """
+        从 SQL 表达式提取字段引用，用于自动补全 depends_on。
+
+        提取策略（优先级降序）：
+        1. `alias.field_name` —— 最常见、最可靠
+        2. 裸字段名（excluding SQL 关键字 / 内置函数） —— best-effort
+
+        Args:
+            sql_expr: 衍生指标的 SQL 表达式
+
+        Returns:
+            字段名列表，去重保序；提取不到时返回空 list
+        """
+        if not sql_expr:
+            return []
+
+        # 1. 提取 alias.field 形式
+        with_alias = re.findall(r"\b[a-zA-Z_]\w*\.([a-zA-Z_]\w+)\b", sql_expr)
+
+        result: list = []
+        seen: set = set()
+
+        # 优先用 alias.field 提取的字段
+        for f in with_alias:
+            key = f.lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(f)
+
+        # 2. 如果一个都没提到，回退到裸字段名（更激进，过滤 SQL 关键字）
+        if not result:
+            bare = re.findall(r"\b([a-zA-Z_]\w+)\b", sql_expr)
+            for f in bare:
+                key = f.lower()
+                if key in cls._SQL_KEYWORDS_BLACKLIST or key in seen:
+                    continue
+                seen.add(key)
+                result.append(f)
+
+        return result
+
+    def _auto_fix_depends_on(self, output: dict) -> None:
+        """
+        兜底修复：LLM 偶发漏写衍生指标的 depends_on。
+        从 sql_expression 自动提取字段名补上，避免卡在 schema 校验。
+        """
+        for model in output.get("semantic_models", []) or []:
+            for metric in model.get("metrics", []) or []:
+                if metric.get("aggregation") != "自定义":
+                    continue
+                if metric.get("depends_on"):  # 已经有就不动
+                    continue
+                sql_expr = metric.get("sql_expression", "") or ""
+                extracted = self._extract_field_refs(sql_expr)
+                if extracted:
+                    metric["depends_on"] = extracted
+                    logger.warning(
+                        f"[AUTO_FIX] 衍生指标 '{metric.get('field_name', '?')}' "
+                        f"的 depends_on 被 LLM 漏写，已从 SQL 表达式自动补全：{extracted}"
+                    )
+                else:
+                    # 提取不到任何字段，填占位符避免卡死
+                    metric["depends_on"] = ["__auto_unknown__"]
+                    logger.warning(
+                        f"[AUTO_FIX] 衍生指标 '{metric.get('field_name', '?')}' "
+                        f"的 depends_on 被 LLM 漏写，且无法从 SQL 提取字段；已填占位符 __auto_unknown__"
+                    )
 
     def _test_sql_parallel(self, client, semantic_models: list) -> list:
         """
