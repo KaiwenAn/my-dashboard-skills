@@ -346,7 +346,7 @@ def main():
     # 优先级（高→低）：user_input["enable_sql_test"] > --no-sql-test / NLConverter 关键词 > config.json sql_validation
     # 默认启用（True），三层都是「关闭能力」
     sql_test_source = ""
-    enable_sql_test_final = True  # 默认启用
+    enable_sql_test_final = False  # 默认不启用
 
     # 最高优先级：user_input 中显式指定（JSON 文件输入场景）
     if "enable_sql_test" in user_input:

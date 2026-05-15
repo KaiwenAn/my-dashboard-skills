@@ -196,25 +196,32 @@ def parse_json_response(raw: str) -> dict:
     """
     text = raw.strip()
 
-    # 情况2: ```json ... ```
+    # 情况2: ```json ... ```（兼容未闭合的情况，例如被 max_tokens 截断）
     if "```json" in text:
-        start = text.index("```json") + len("```json")
-        end = text.index("```", start)
-        text = text[start:end].strip()
+        start = text.find("```json") + len("```json")
+        end = text.find("```", start)
+        if end == -1:
+            # 没找到闭合标记：取起始标记之后的全部内容当作 JSON 候选
+            text = text[start:].strip()
+        else:
+            text = text[start:end].strip()
 
-    # 情况3: ``` ... ```（不含 json 标记）
+    # 情况3: ``` ... ```（不含 json 标记，同样兼容未闭合）
     elif "```" in text:
-        start = text.index("```") + len("```")
+        start = text.find("```") + len("```")
         # 跳过可能的语言标记行（如 json、JSON）
         if text[start:start+1] == "\n":
             start += 1
-        end = text.index("```", start)
-        text = text[start:end].strip()
+        end = text.find("```", start)
+        if end == -1:
+            text = text[start:].strip()
+        else:
+            text = text[start:end].strip()
 
     # 情况4: 找到第一个 { 和最后一个 }
     elif "{" in text and "}" in text:
-        start = text.index("{")
-        end = text.rindex("}") + 1
+        start = text.find("{")
+        end = text.rfind("}") + 1
         text = text[start:end]
 
     try:
