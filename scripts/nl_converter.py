@@ -309,42 +309,125 @@ class NLConverter:
         """
         检测自然语言中的运行模式关键词
 
-        Returns:
-            "publish" 或 "plan"，无匹配则返回 None
-        """
-        publish_keywords = ["推送", "发布", "publish"]
-        plan_keywords = ["方案", "仅方案", "plan"]
+        识别两种意图：
+            - publish：要把方案推送到 BI 平台
+            - plan：只生成方案文档，不推送
 
+        匹配优先级：disable → plan 优先（避免"不要推送"被误判为 publish）
+
+        Returns:
+            "publish" / "plan" / None
+        """
         text_lower = text.lower()
 
-        for kw in publish_keywords:
-            if kw in text_lower:
-                return "publish"
+        # 推送动作词（中英文）
+        push_verb = r"(?:推送|发布|上传|上线|publish|push|deploy)"
+        # 推送对象（用于句中模式，避免"推送失败"被误识别）
+        push_target = r"(?:bi|平台|看板|dashboard|空间)"
+        # 前缀和动词之间允许 0-5 个非标点字（排除标点防止跨子句串联）
+        glue = r"(?:[^，。！？；,.!?;]{0,5})?"
 
-        for kw in plan_keywords:
-            if kw in text_lower:
-                return "plan"
+        # ============ disable → plan ============
+        # 1. 否定前缀 + 推送动作（"不要推送"、"别发布"、"跳过推送"）
+        if re.search(
+            rf"(?:不|不要|不需|不需要|不用|别|无需|跳过){glue}{push_verb}",
+            text_lower,
+        ):
+            return "plan"
+        # 2. 明确的 plan 关键词
+        if re.search(
+            r"仅方案|只方案|只生成方案|仅生成方案|方案模式|\bplan\b",
+            text_lower,
+        ):
+            return "plan"
+
+        # ============ enable → publish ============
+        # 0. 明确的 publish 关键词（与 plan 的"方案模式"对称,优先匹配）
+        if re.search(r"推送模式|发布模式|publish\s*mode", text_lower):
+            return "publish"
+        # 1. 肯定前缀 + 推送动作（"要推送"、"请发布"）
+        if re.search(
+            rf"(?:要|需要|开启|启用|打开|请|麻烦){glue}{push_verb}",
+            text_lower,
+        ):
+            return "publish"
+        # 2. 推送动作 + 目标（"推送到 BI"、"发布看板"）—— 比裸"推送失败"更精确
+        if re.search(
+            rf"{push_verb}\s*(?:到|至|去|向)?\s*{push_target}",
+            text_lower,
+        ):
+            return "publish"
+        # 3. 英文 publish 单词
+        if re.search(r"\bpublish\b", text_lower):
+            return "publish"
 
         return None
 
     def _detect_sql_test_hint(self, text: str) -> Optional[bool]:
         """
-        检测自然语言中是否要求关闭 SQL 校验
+        检测自然语言中是否明确要求开启 / 关闭 SQL 校验
+
+        说明：在本项目语境下，"SQL 校验"和"语义模型校验"是同一件事
+        （语义模型 Agent 内部会调度 SQL 试跑）。两种说法都被识别：
+            - "要校验 SQL" / "要校验语义模型"          → True
+            - "不校验 SQL" / "跳过语义模型校验"        → False
+            - "校验语义模型" / "语义模型校验"          → True
+            - "不要语义模型校验"                       → False
+
+        匹配优先级：disable（否定）> enable（肯定），避免"不要校验"被误判为"校验"。
 
         Returns:
-            False 表示关闭校验，None 表示未检测到关键词（保持默认）
+            True  - 用户明确要求开启
+            False - 用户明确要求关闭
+            None  - 未检测到，由配置决定
         """
-        disable_keywords = [
-            "不校验", "跳过校验", "跳过验证", "不验证", "不试跑",
-            "跳过试跑", "不需要校验", "无需校验", "不需要验证",
-            "无需验证", "跳过SQL", "nosqltest",
-        ]
-
         text_lower = text.lower()
 
-        for kw in disable_keywords:
-            if kw in text_lower:
-                return False
+        # 校验"对象"（可选）：sql / 语义模型 / 语义 / model
+        target = r"(?:sql|语义模型|语义|model)"
+        # 校验"动作"：必须出现完整的动词词
+        verb = r"(?:校验|验证|试跑|测试)"
+        # 前缀和动词之间允许 0-5 个非标点字（排除标点防止跨子句串联：
+        # "不要推送，要校验"不应让"不要"+"，要校"被识别为否定校验）
+        glue = r"(?:[^，。！？；,.!?;]{0,5})?"
+
+        disable_pattern = re.compile(
+            rf"(?:不|不要|不需|不需要|不用|别|无需|跳过)"
+            rf"{glue}(?:{target})?\s*{verb}"
+        )
+        enable_pattern = re.compile(
+            rf"(?:要|需要|开启|启用|打开|请|麻烦)"
+            rf"{glue}(?:{target})?\s*{verb}"
+        )
+        # 句首裸命令式："校验语义模型" / "语义模型校验" / "校验 SQL"
+        direct_enable_pattern = re.compile(
+            rf"^\s*(?:{verb}\s*{target}|{target}\s*{verb})"
+        )
+        # 序列描述：用户用"先 X 再 Y" / "X 后再 Y" / "X 成功后..." 等连接词描述意图
+        # 例："语义模型校验成功后再推送"、"先校验 SQL"、"校验通过后..."
+        sequence_enable_pattern = re.compile(
+            # ① "先 + (target?) + verb"：先校验 / 先做 SQL 校验
+            rf"先\s*(?:{target}\s*)?{verb}|"
+            # ② "(target?) + verb + (成功/通过/完成/结束)? + (之?后|再)"：
+            #    校验后再... / 语义模型校验成功后... / 校验完成再...
+            rf"(?:{target}\s*)?{verb}\s*(?:成功|通过|完成|结束)?\s*(?:之?后|再)"
+        )
+
+        # disable 优先（"不要校验"必须先于"校验"匹配）
+        if disable_pattern.search(text_lower):
+            return False
+        if enable_pattern.search(text_lower):
+            return True
+        if direct_enable_pattern.search(text_lower):
+            return True
+        if sequence_enable_pattern.search(text_lower):
+            return True
+
+        # 英文兜底
+        if re.search(r"no\s*sql\s*test|skip\s*sql", text_lower):
+            return False
+        if re.search(r"validate\s*sql|test\s*sql", text_lower):
+            return True
 
         return None
 

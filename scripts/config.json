@@ -5,20 +5,32 @@
     "catalog": "iceberg_zjyprc_hadoop",
     "schema": "meta",
     "engine": "Spark",
-    "token": "504c9f8b37c245b0b6a9f76ec18bd4f4"
+    "token": "62f6e3737750485ba1b7fdb0e6a65b15"
   },
   "bi_platform": {
-    "enabled": "publish",
+    "enabled": "plan",
     "base_url": "https://api-smp.dt.mi.com",
     "api_prefix": "/os",
-    "space_id": "11169",
+    "space_id": "11319",
     "creator": "ankaiwen1"
   },
   "llm": {
-    "model": "xiaomi/deepseek-v3.1",
+    "model": "xiaomi/Qwen3-235B-A22B-Instruct-2507",
     "api_key": "sk-KTFFrM2IYn9azgip4FQm7tHnMg1CCZwH7DWD6I3FkvtuMUfQ",
     "base_url": "https://api.llm.mioffice.cn/v1",
     "temperature": 0.1
+  },
+  "copilot": {
+    "_comment": "编辑助手直连 — Pipeline 跑完后自动调用 BI 编辑助手 API 真把看板搭出来。Cookie 从 .env 的 COPILOT_COOKIE 读。",
+    "enabled": true,
+    "base_url": "https://api-whale.data.mioffice.cn",
+    "web_origin": "https://data.mioffice.cn",
+    "project_id": "10125971",
+    "os_data_id": "10125971",
+    "owner": "ankaiwen1",
+    "parent_menu_id": "375083",
+    "base_os_menu_id": "dashboard_1",
+    "impersonate": "chrome146"
   },
   "sql_validation": false
 }
