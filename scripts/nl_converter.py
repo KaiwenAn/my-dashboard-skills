@@ -546,7 +546,17 @@ class NLConverter:
         Returns:
             data_sources 列表，每项包含 table_name, description, key_fields, field_descriptions
         """
+        # 延迟 import：和文件顶部 `from src.data_platform_api import DataPlatformClient`
+        # 保持同款路径前缀（带 src.）。早前曾误写成 `from data_platform_api import ...` 导致
+        # ImportError 被吞 → 永远走 LLM 脑补 fallback，fail-fast 机制失效。
+        try:
+            from src.data_platform_api import TableNotFoundError
+        except ImportError as _e:  # pragma: no cover - 兜底，正常路径不会走到
+            print(f"[WARN] 无法 import TableNotFoundError，fail-fast 失效: {_e}")
+            TableNotFoundError = None  # type: ignore[assignment]
+
         data_sources = []
+        invalid_tables: list[str] = []  # 收集所有"表不存在"的输入，循环结束后一并报错
 
         for table_name in table_names:
             logger.info(f"  正在获取表 {table_name} 的字段信息...")
@@ -587,8 +597,15 @@ class NLConverter:
                     data_source["field_descriptions"] = field_descriptions
 
                 except Exception as e:
+                    # 表不存在 → 记下来，**不要走 LLM 脑补**
+                    # （之前的 fallback 会让 LLM 凭空编字段，用户全程不知道，
+                    #  最终走完 5 分钟 pipeline 才在 SQL 试跑阶段报错。）
+                    if TableNotFoundError is not None and isinstance(e, TableNotFoundError):
+                        logger.warning(f"  表 {table_name} 不存在")
+                        invalid_tables.append(table_name)
+                        continue
                     logger.warning(f"获取字段信息失败: {e}")
-                    # 如果获取失败，尝试使用LLM推断
+                    # 其他失败（权限 / 网络等）保留旧行为：LLM 推断
                     data_source = self._infer_table_info_with_llm(data_source, user_input)
             else:
                 # 无数据平台客户端，使用LLM推断
@@ -599,6 +616,13 @@ class NLConverter:
             data_source["table_type"] = self._infer_table_type(table_name)
 
             data_sources.append(data_source)
+
+        # 有任何不存在的表就 fail-fast，让飞书层立刻把准确的错误回给用户
+        if invalid_tables and TableNotFoundError is not None:
+            raise TableNotFoundError(
+                ", ".join(invalid_tables),
+                f"Table or view not found: {', '.join(invalid_tables)}",
+            )
 
         return data_sources
 

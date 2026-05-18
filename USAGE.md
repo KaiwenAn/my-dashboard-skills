@@ -1,523 +1,326 @@
-# 看板开发 Agent 使用指南
+# 看板 Agent 使用指南
 
-> 一键生成 BI 看板搭建方案的数据分析师提效工具
+> 这份文档面向**日常使用**。第一次配环境看 [INSTALL.md](INSTALL.md)。
 
 ## 目录
 
 - [快速开始](#快速开始)
-- [核心能力](#核心能力)
-- [输入格式详解](#输入格式详解)
-- [使用示例](#使用示例)
-- [输出说明](#输出说明)
-- [配置指南](#配置指南)
-- [常见问题](#常见问题)
+- [4 条主路径](#4-条主路径)
+- [Cookie 健康检查](#cookie-健康检查)
+- [开机 / 长期未用启动 Checklist](#开机--长期未用启动-checklist)
+- [进度卡片说明](#进度卡片说明)
+- [输出物说明](#输出物说明)
+- [常见错误 + 排查](#常见错误--排查)
+- [高级用法](#高级用法)
+- [更新日志](#更新日志)
 
 ---
 
 ## 快速开始
 
-> **⚠️ 重要：关于工作目录**
-> 
-> 本 Skill 的工作目录是 `my-dashboard-skills` 子目录。
-> - ✅ **正确**：`cd my-dashboard-skills` 后再执行
-> - ✅ **也正确**：从任何目录执行时，使用完整路径 `my-dashboard-skills/scripts/run_pipeline.py`
-> - ❌ **错误**：在 `dashboard-agent` 目录直接执行 `python scripts/run_pipeline.py`
+> 默认你已按 [INSTALL.md](INSTALL.md) 配置完。下面 30 秒走通：
 
-### 方式一：自然语言触发（推荐）
+```powershell
+# 1. 连小米内网（VPN）
+# 2. 检查 cookie 状态
+python scripts/check_cookie.py        # 应输出 ✅ Cookie 有效
 
-在 WorkBuddy 中加载 Skill 后，直接用自然语言描述需求：
+# 3. 启动飞书编排服务（常驻进程，不要关）
+python scripts/feishu_orchestrator.py
+# 看到 "[Lark] ping success" 反复出现就是连上了
 
-```
-帮我做一个电商运营日报看板，包含GMV、客单价、新老客占比等指标
-数据源是 dwd_order_detail 和 dim_user 两张表
+# 4. 在飞书测试群 @ 机器人
 ```
 
-### 方式二：CLI 执行
+飞书示例消息：
 
-**方法A：先进入工作目录（推荐）**
-
-```bash
-# 进入 Skill 工作目录
-cd c:\Users\Kai\.workbuddy\skills\dashboard-agent\my-dashboard-skills
-
-# 执行 Pipeline
 ```
-命令行直接输入
-python scripts/run_pipeline.py --natural-input "帮我做一个用户行为分析看板，数据源是iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view"
-
-或从文件读取
-echo "帮我做一个用户行为分析看板，数据源是iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view" > input.txt
-python scripts/run_pipeline.py --natural-input-file input.txt
-
-或执行规范化的json文件
-python scripts/run_pipeline.py --input references/examples/ecommerce_daily.json --output ./output
+@看板助手 用推送模式做一个 DAU 趋势看板，
+数据源是 iceberg_zjyprc_hadoop.meta.dwd_user_module_page_view，要试跑
 ```
 
-**方法B：使用完整相对路径**
-
-```bash
-# 在 dashboard-agent 目录执行
-python my-dashboard-skills/scripts/run_pipeline.py --input my-dashboard-skills/references/examples/ecommerce_daily.json --output my-dashboard-skills/output
-```
+预期：30 秒内回「收到！正在生成看板方案...」+ 进度卡片走完 6 步 + 收到方案文档（Markdown + HTML）+ BI 看板链接（如果选了"推送"模式）。
 
 ---
 
-## 核心能力
+## 4 条主路径
 
-### 6 个 Agent 流水线
+按需求严谨度选。**自然语言关键词决定模式**，无需改配置。
 
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  需求解析    │───▶│  语义模型    │───▶│   BI推送    │───▶│  图表设计    │───▶│  看板指令    │───▶│  方案生成    │
-│ Requirements │    │   SQL Gen   │    │BI Publish   │    │Chart Design │    │Instruction  │    │   Solution  │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-```
+| 路径 | 触发关键词 | 耗时 | 产出 | 适合场景 |
+|---|---|---|---|---|
+| 🅰️ **推送 + 试跑** | 含「推送」+「试跑/校验」 | 3-5 min | 方案 + BI 看板（数据已校验） | 业务复盘看板、对外汇报、不能出错 |
+| 🅱️ **推送 + 不试跑** | 含「推送」无「试跑」 | 1-2 min | 方案 + BI 看板（待验证） | 熟悉数据、快速迭代、第 N 次改同一看板 |
+| 🅲 **方案 + 试跑** | 含「试跑」无「推送」 | 1.5-3 min | 方案 + 校验过的 SQL（不动 BI 平台） | 给业务方对齐方案 |
+| 🅳 **方案 + 不试跑** | 都不含（默认） | 30-60 s | 方案文档 | 头脑风暴、探索 AI 方案空间 |
 
-| Agent | 职责 | 提效效果 |
-|-------|------|----------|
-| **需求解析** | 口径守门人，识别歧义，7步推理策略 | 减少返工 |
-| **语义模型** | SQL生成，NULLIF防除零，三层过滤 | 核心提效 |
-| **BI推送** | 自动创建语义模型到BI平台 | 一键发布 |
-| **图表设计** | 12列网格布局，图表类型推荐 | 专业设计 |
-| **看板指令** | 标准化JSON指令，可审查可执行 | 接口标准化 |
-| **方案生成** | Markdown方案文档 | 即取即用 |
+### 模式关键词识别规则
 
-### 提效数据
+由 [scripts/nl_converter.py](scripts/nl_converter.py) 处理：
 
-- **一期（仅方案）**：3-4x 提效
-- **二期（打通BI API）**：可达 8-10x 提效
-- **语义模型SQL**：直接可用，无需修改
+- **推送 vs 方案**：含「推送」/「publish」/「发布」 → 推送；含「方案」/「仅方案」/「不推送」 → 方案；都没说 → 走 `config.json` 的 `bi_platform.enabled`（默认 `"plan"`）
+- **试跑 vs 不试跑**：含「试跑」/「校验」/「验证」/「测试」相关肯定句 → 试跑；含「不试跑」/「跳过校验」/「不需要验证」 → 不试跑；都没说 → 走 `config.json` 的 `sql_validation`（默认 `false`）
+- 否定优先于肯定：「不要校验」会被识别为不试跑而非试跑
 
----
+### 路径选型建议
 
-## 输入格式详解
+详细决策树见 [docs/项目价值与使用场景.md](docs/项目价值与使用场景.md)。简化版：
 
-### 最小可用输入
-
-```json
-{
-  "dashboard_meta": {
-    "title": "看板标题"
-  },
-  "data_sources": [
-    {
-      "table_name": "表名",
-      "key_fields": ["字段1", "字段2"]
-    }
-  ],
-  "metrics_requirement": [
-    {"name": "指标名称"}
-  ]
-}
-```
-
-### 完整输入格式
-
-```json
-{
-  "dashboard_meta": {
-    "title": "电商运营日报",
-    "audience": "运营团队",
-    "goal": "监控每日核心经营指标"
-  },
-
-  "data_sources": [
-    {
-      "table_name": "dwd_order_detail",
-      "description": "订单明细表，每日增量",
-      "table_type": "fact",
-      "key_fields": ["order_id", "user_id", "order_amount", "pay_time"],
-      "field_mappings": {
-        "real_app_id": "app_id"
-      },
-      "field_descriptions": {
-        "order_amount": "订单金额，已扣除退款"
-      }
-    },
-    {
-      "table_name": "dim_user",
-      "description": "用户维度表",
-      "table_type": "dimension",
-      "key_fields": ["user_id", "province", "user_type"]
-    }
-  ],
-
-  "join_hints": [
-    {
-      "left_table": "dwd_order_detail",
-      "right_table": "dim_user",
-      "join_on": "dwd_order_detail.user_id = dim_user.user_id",
-      "join_type": "LEFT JOIN",
-      "notes": "用户维度表作为维度使用"
-    }
-  ],
-
-  "metrics_requirement": [
-    {"name": "GMV", "description": "成交总额"},
-    {"name": "客单价", "description": "平均每单金额"}
-  ],
-
-  "dimensions_requirement": [
-    {"name": "日期"},
-    {"name": "地区"}
-  ],
-
-  "filters_known": [
-    {
-      "field": "date",
-      "operator": "BETWEEN",
-      "value": ["2024-01-01", "2024-01-31"],
-      "applies_to_all_tables": true
-    }
-  ],
-
-  "additional_notes": "时间范围默认最近30天"
-}
-```
-
-### 字段说明
-
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `dashboard_meta.title` | ✅ | 看板标题 |
-| `dashboard_meta.audience` | ❌ | 目标受众 |
-| `dashboard_meta.goal` | ❌ | 看板目标 |
-| `data_sources` | ✅ | 数据源列表，至少1项 |
-| `data_sources[].table_name` | ✅ | 表名 |
-| `data_sources[].key_fields` | 建议 | 关键字段列表 |
-| `data_sources[].table_type` | ❌ | `fact`/`dimension`/`fact_as_dimension` |
-| `data_sources[].field_mappings` | ❌ | 字段别名映射 |
-| `data_sources[].field_descriptions` | ❌ | 字段含义说明 |
-| `join_hints` | 建议 | 多表关联时建议提供 |
-| `metrics_requirement` | ✅ | 指标需求列表 |
-| `dimensions_requirement` | ❌ | 维度需求列表 |
-| `filters_known` | ❌ | 已知过滤条件 |
-| `additional_notes` | ❌ | 补充说明 |
-
-### table_type 可选值
-
-| 值 | 说明 | 示例 |
-|---|------|------|
-| `fact` | 事实表，主表 | 订单明细、事件表 |
-| `dimension` | 维度表 | 用户表、商品表 |
-| `fact_as_dimension` | 事实表当维度用，需去重 | 国家列表、活动列表 |
+- 关心**结果可靠** → 🅰️
+- 关心**速度** → 🅱️
+- 关心**先对齐再做** → 🅲
+- 头脑风暴 → 🅳
 
 ---
 
-## 使用示例
+## Cookie 健康检查
 
-### 示例 1：电商运营日报
+`COPILOT_COOKIE` **约 1 天过期**。过期后自动建图会失败，但 pipeline 仍能跑出方案文档。
 
-**需求描述**：
-```
-帮我做一个电商运营日报看板，包含以下指标：
-- GMV（成交总额）
-- 客单价（平均每单金额）
-- 新老客占比
-- 退款率
+### 用法
 
-维度：日期、商品类目、地区
-数据源：dwd_order_detail（订单表）、dim_user（用户表）
+```powershell
+python scripts/check_cookie.py
 ```
 
-**对应输入 JSON**：
+### 输出对照
 
-```json
-{
-  "dashboard_meta": {
-    "title": "电商运营日报",
-    "audience": "运营团队",
-    "goal": "监控每日核心经营指标，及时发现异常波动"
-  },
-  "data_sources": [
-    {
-      "table_name": "dwd_order_detail",
-      "description": "订单明细表，每日增量",
-      "key_fields": ["order_id", "user_id", "order_amount", "order_status", "pay_time", "category_id", "refund_amount"]
-    },
-    {
-      "table_name": "dim_user",
-      "description": "用户维度表",
-      "key_fields": ["user_id", "register_date", "province", "city", "user_type"]
-    }
-  ],
-  "metrics_requirement": [
-    {"name": "GMV", "description": "成交总额"},
-    {"name": "客单价", "description": "平均每单金额"},
-    {"name": "新客占比", "description": "新客户GMV占比"},
-    {"name": "退款率", "description": "退款金额/GMV"}
-  ],
-  "dimensions_requirement": [
-    {"name": "日期"},
-    {"name": "商品类目"},
-    {"name": "地区"}
-  ],
-  "filters_known": [],
-  "additional_notes": "时间范围默认最近30天，需要区分新老客，退款率要单独看"
-}
-```
+| 输出 | 行动 |
+|---|---|
+| ✅ Cookie 有效，剩余 X 小时 | 继续 |
+| ⚠️ 即将过期：剩 X 分钟 | 现在重抓，避免跑到一半挂掉 |
+| ❌ Cookie 已过期 | 浏览器重登 [data.mioffice.cn](https://data.mioffice.cn) → 重抓 → 写入 `scripts/.env` |
+| ❌ 没找到 _aegis_cas_p | 复制不全或来源错，重抓 |
+| ❌ 中间有换行 | 删掉 `.env` 里 `COPILOT_COOKIE=` 那行的换行让它合一行 |
 
-### 示例 2：AB测试分析
+### 怎么重抓
 
-**需求描述**：
-```
-分析AB测试效果，对比实验组和对照组的核心指标：
-- 人均点击次数
-- 转化率
-- 用户留存率（次日、7日）
+详细步骤见 [INSTALL.md - 3.2](INSTALL.md#32-copilot_cookie自动建图必需)。简化版：
 
-维度：实验分组、日期、渠道
-```
-
-### 示例 3：用户行为分析
-
-**需求描述**：
-```
-分析用户在APP上的行为路径：
-- DAU、WAU、MAU
-- 人均使用时长
-- 核心功能渗透率
-
-维度：日期、用户类型、操作系统
-```
+1. 浏览器登 [data.mioffice.cn](https://data.mioffice.cn)
+2. F12 → Network → 任意请求 → Headers → Request Headers → Cookie
+3. **右键 Copy value**（不要拖蓝复制）
+4. 粘贴到 `scripts/.env` 的 `COPILOT_COOKIE=` 后面，**确保是单行**
+5. 重启编排服务
 
 ---
 
-## 输出说明
+## 开机 / 长期未用启动 Checklist
 
-### 目录结构
+电脑重启 / 休眠多天后，按下面顺序：
+
+```powershell
+# 1. 连小米 VPN（数据平台、LLM 网关、BI 平台都是内网域名）
+ping proxy-service-http-cnbj1-dp.api.xiaomi.net
+
+# 2. 进项目目录
+cd C:\Users\Kai\.workbuddy\skills\dashboard-agent\my-dashboard-skills
+
+# 3. 检查 cookie（不绿就先重抓再启动）
+python scripts/check_cookie.py
+
+# 4. 启动编排服务（常驻进程）
+python scripts/feishu_orchestrator.py
+
+# 5. 飞书 @ 机器人发个简单需求验证
+```
+
+### 长时间没用后**很可能要刷新**的凭证
+
+按过期概率从高到低：
+
+| 凭证 | 位置 | 有效期 | 怎么刷 |
+|---|---|---|---|
+| 🔴 `COPILOT_COOKIE` | [scripts/.env](scripts/.env) | **约 1 天** | 浏览器重登 + 重抓（看上面 Cookie 健康检查） |
+| 🟡 `data_platform.token` | [scripts/config.json](scripts/config.json) | 数月 / 不定 | 数据平台后台重新申请 |
+| 🟢 `FEISHU_APP_ID/SECRET` | [scripts/.env](scripts/.env) | 长期 | 不用动 |
+| 🟢 `LLM api_key` | [scripts/config.json](scripts/config.json) | 长期 | 不用动 |
+
+---
+
+## 进度卡片说明
+
+发完需求 ~30 秒后，机器人会发一张进度卡片，**实时 PATCH 更新**（不刷屏）：
+
+```
+进度
+☑ 需求解析       (12.3s)
+☑ 语义模型       (101.9s)   ← 含 SQL 试跑
+☐ BI 推送         …         ← 仅推送模式
+☐ 图表设计        …
+☐ 看板指令        …
+☐ 方案生成        …
+```
+
+各步典型耗时：
+
+| 步骤 | 耗时 | 说明 |
+|---|---|---|
+| 需求解析 | 10-30 s | LLM 调用，确认项识别 |
+| 语义模型 | **100-200 s** | 整条 pipeline 大头：DESCRIBE 字段 + LLM 生成 SQL + 试跑（如启用） |
+| BI 推送 | 5-15 s | HTTP 调用，无 LLM，仅推送模式有 |
+| 图表设计 | 30-90 s | LLM 调用 |
+| 看板指令 | 20-60 s | LLM 调用 |
+| 方案生成 | 30-90 s | LLM 调用，输出 Markdown |
+
+### SQL 试跑失败重试机制
+
+启用试跑时，每个语义模型的 SQL 会在数据平台 dry run。失败有两层重试：
+
+- **内层（[src/agents.py:386-471](src/agents.py#L386-L471)）**：单次试跑失败最多重试 3 次
+  - 第 1 次失败：直接重试相同 SQL（兜底临时资源问题）
+  - 第 2-3 次失败：把 Spark 报错（错列名、候选字段、行号）注入给 LLM，重新生成 SQL
+- **外层（[src/pipeline.py:333](src/pipeline.py#L333)）**：Pipeline 级重试 3 次
+- 最坏情况 3×3 = 9 次试跑都失败，才返回错误终止
+
+> 错误注入链路在 2026-05-18 修复（之前注入的"错误信息"实际只有 5 个字符 `"SQL执行失败"`），现在 LLM 能拿到完整 Spark 报错，重试通过率显著提升。详见 [docs/迭代记录_2026-05-18.md](docs/迭代记录_2026-05-18.md)。
+
+---
+
+## 输出物说明
+
+### 飞书机器人的产出
+
+成功时机器人会发：
+
+1. 进度卡片（最终态：6 步全 ☑）
+2. **方案 Markdown 文档**（直接贴在群里）
+3. **方案 HTML 文件**（上传为附件，可直接预览）
+4. **BI 看板链接**（仅推送 + copilot.enabled 模式，且 cookie 有效）
+
+### 本地文件（CLI 模式 / pipeline 内部）
 
 ```
 output/
-├── solution.md              # 完整搭建方案（Markdown）
-├── solution.html            # HTML 可视化版本
-├── execution_summary.json   # 执行摘要
-└── agent_outputs/           # 中间产物
+├── solution.md                    # 完整方案（Markdown）
+├── solution.html                  # HTML 渲染版本
+├── execution_summary.json         # 执行摘要（每步耗时、状态）
+└── agent_outputs/                 # 每个 Agent 的中间产物
     ├── 1.requirements_parser.json
-    ├── 2.semantic_model.json
+    ├── 2.semantic_model.json      # 含 SQL
     ├── 3.chart_design.json
     ├── 4.instruction_generator.json
-    └── confirmation_items.json
+    ├── bi_push_result.json        # 仅推送模式
+    └── confirmation_items.json    # 待确认项汇总
 ```
 
-### 方案文档结构
+### 调试转储
 
-```
-# 看板搭建方案：电商运营日报
+SQL 试跑失败时自动写到 `poc/diag/sql_fail_attempt{N}_{timestamp}.json`：
 
-## 一、需求解析
-### 1.1 核心指标
-### 1.2 维度拆解
-### 1.3 待确认项
-
-## 二、语义模型
-### 2.1 SQL语句
-### 2.2 维度配置
-### 2.3 指标配置
-
-## 三、图表设计
-### 3.1 图表列表
-### 3.2 全局筛选器
-### 3.3 布局方案
-
-## 四、看板搭建指令
-### 4.1 指令详情（JSON格式）
-
-## 五、确认项清单
-### 5.1 高优先级
-### 5.2 中优先级
-### 5.3 低优先级
+```json
+{
+  "retry_count": 1,
+  "max_retry": 3,
+  "failed_models": [{"model_name": "...", "error_message": "...", "sql": "..."}],
+  "last_sql_test_error_injected": "..."
+}
 ```
 
-### 确认项说明
-
-Pipeline 会自动识别需要人工确认的事项，按风险排序：
-
-| 风险 | 类别 | 说明 |
-|------|------|------|
-| 🔴 高 | 指标口径、SQL逻辑 | 必须确认后才能使用 |
-| 🟡 中 | JOIN方式、数据源 | 建议确认 |
-| 🟢 低 | 图表类型、布局 | 可后续调整 |
+用于复盘"为什么 SQL 反复改不对"。
 
 ---
 
-## 配置指南
+## 常见错误 + 排查
 
-### config.json
+| 现象 | 原因 | 解决 |
+|---|---|---|
+| 飞书 @ 机器人没反应 | 编排服务没启动 / VPN 没连 | 启动 `feishu_orchestrator.py` + 确认 VPN |
+| 终端报 `ConnectionError` / DNS 解析失败 | 没在内网 | 连 VPN |
+| 「自动建图未启用：缺少 COPILOT_COOKIE」 | cookie 失效或没配 | `python scripts/check_cookie.py` 看状态，过期就重抓 |
+| 「自动建图跳过：当前是方案模式」 | 你的需求里没说"推送" | 这是预期行为；想自动建图就在需求里说"推送模式" |
+| 试跑反复失败 | SQL 真有 bug | 看 `poc/diag/sql_fail_attempt*.json` 转储里的 `error_message`（修复后会是真实 Spark 报错），按提示改需求或表选择 |
+| SQL 试跑报 `403 / Token invalid` | 数据平台 token 过期 | 申请新 token 改 `config.json` |
+| LLM 调用报 `401` | LLM api_key 失效 | 极少见，去 mioffice 后台续 |
+| Pipeline 卡在某一步超过 5 分钟 | LLM 网关慢 / 网络抖 | 等待或重试；持续抖动看 LLM 网关状态 |
+| 终端 Ctrl+C 后不回提示符 | lark SDK 非 daemon 线程 | 再按一次 Ctrl+C 强行退出（已知现象） |
+| Windows 控制台中文乱码 | GBK 编码 | 编排服务和 `check_cookie.py` 已自动 UTF-8；其他脚本设 `$env:PYTHONIOENCODING="utf-8"` |
+| 方案文档生成但内容很短 | LLM 4096-token 输出截断 | 看 [src/agents.py:924](src/agents.py#L924) 的 max_tokens 是否够 |
 
-```json
-{
-  "data_platform": {
-    "base_url": "https://proxy-service-http-cnbj1-dp.api.xiaomi.net",
-    "catalog": "iceberg_zjyprc_hadoop",
-    "schema": "meta",
-    "engine": "Spark",
-    "token": "你的数据平台token"
-  },
-  "bi_platform": {
-    "enabled": "plan",
-    "base_url": "https://api-smp.dt.mi.com",
-    "api_prefix": "/os",
-    "space_id": "你的空间ID",
-    "creator": "员工邮箱前缀"
-  },
-  "sql_validation": false,
-  "llm": {
-    "model": "deepseek-ai/DeepSeek-V4-Flash",
-    "temperature": 0.1
-  }
-}
-注：
-1. 小米网关
-  ① baseurl：https://api.llm.mioffice.cn/v1
-  ② model：
-      xiaomi/deepseek-v3.1
-      xiaomi/Qwen3-235B-A22B-Instruct-2507
-2. 硅基流动baseurl：https://api.siliconflow.cn/v1
-  ① model:
-      deepseek-ai/DeepSeek-V4-Flash
-```
-
-### 环境变量
-
-| 变量名 | 说明 |
-|--------|------|
-| `HUNYUAN_API_KEY` | 腾讯混元 API Key |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key |
-| `LLM_BASE_URL` | LLM API 地址 |
-
-### ⚠️ 注意事项
-
-1. **`data_platform.engine` 必须设为 `"Spark"`**
-   - Presto 模式会触发 SparkSqlRewriter，导致 SQL 报 400 错误
-
-2. **BI 推送模式切换（4 种方式，优先级从高到低）**
-
-   | 优先级 | 方式 | 示例 |
-   |--------|------|------|
-   | 1（最高） | `--mode` 命令行参数 | `--mode publish` / `--mode plan` |
-   | 2 | JSON 中的 `bi_config` | `{"bi_config": {"space_id": 123, "creator": "zhangsan"}}` |
-   | 3 | 自然语言关键词 | 输入含"推送"/"发布" → PUBLISH，含"方案"/"仅方案" → PLAN |
-   | 4（最低） | `config.json` 的 `bi_platform.enabled` | `"plan"`（默认）/ `"publish"` |
-
-   - 启用推送需在 `config.json` 中配置 `space_id` 和 `creator`
-   - `datasource_id` 会在推送时自动获取
-   - 默认 `enabled: "plan"`，只出方案不推送，向后兼容
-
-3. **SQL 校验开关（3 种方式，优先级从高到低）**
-
-   | 优先级 | 方式 | 示例 |
-   |--------|------|------|
-   | 1（最高） | JSON 中的 `enable_sql_test` | `{"enable_sql_test": false}` |
-   | 2 | `--no-sql-test` 参数 或 自然语言关键词 | `--no-sql-test`，或输入含"不校验"/"跳过验证" |
-   | 3（最低） | `config.json` 的 `sql_validation` | `true`（默认）/ `false` |
-
-   - 默认启用 SQL 校验（语义模型 Agent 会试跑 SQL）
-   - 三层都是「关闭能力」，不会强制开启
-   - 与 BI 推送模式完全解耦：可以在 PUBLISH 模式下跳过校验，也可在 PLAN 模式下强制校验
-
-4. **模型选择**
-   - 默认：`deepseek-ai/DeepSeek-V4-Flash`（硅基流动）
-   - 速度优先：DeepSeek-V3.2（2元/M tokens）
-   - 质量优先：DeepSeek-V4-Flash（1元/M tokens）
+更详细的失败点排查全景图见 [docs/需求路径全景.md](docs/需求路径全景.md)。
 
 ---
 
-## 常见问题
+## 高级用法
 
-### Q1: 输入的字段名和实际表字段不一致怎么办？
+### CLI 直跑（绕开飞书）
 
-使用 `field_mappings` 字段别名映射：
+适合自动化、批跑、调试。
 
-```json
-{
-  "field_mappings": {
-    "实际字段名": "别名"
-  }
-}
+```powershell
+# 自然语言输入
+python scripts/run_pipeline.py --natural-input "做一个 DAU 趋势看板，数据源 dwd_user_module_page_view"
+
+# 从文件读取需求
+python scripts/run_pipeline.py --natural-input-file requirement.txt
+
+# JSON 结构化输入（精确控制）
+python scripts/run_pipeline.py --input references/examples/ecommerce_daily.json
+
+# 自定义输出目录
+python scripts/run_pipeline.py --natural-input "..." --output ./my_output
 ```
 
-### Q2: 多表关联怎么描述？
+### CLI 参数
 
-使用 `join_hints`：
+| 参数 | 说明 |
+|---|---|
+| `--input` / `-i` | JSON 输入文件路径 |
+| `--natural-input` / `-n` | 自然语言输入字符串 |
+| `--natural-input-file` | 从文件读自然语言输入 |
+| `--output` / `-o` | 输出目录（默认 `./output`） |
+| `--mode` / `-m` | `plan` / `publish`，强制覆盖所有默认 |
+| `--no-sql-test` | 跳过 SQL 试跑 |
 
-```json
-{
-  "join_hints": [
-    {
-      "left_table": "订单表",
-      "right_table": "用户表",
-      "join_on": "订单表.user_id = 用户表.id",
-      "join_type": "LEFT JOIN"
-    }
-  ]
-}
+### 配置覆盖优先级
+
+#### BI 推送模式（4 层）
+
+```
+--mode 参数  >  user_input.bi_config  >  自然语言关键词  >  config.json bi_platform.enabled
 ```
 
-### Q3: 某些指标需要特殊计算逻辑怎么办？
+#### SQL 校验开关（3 层）
 
-在 `additional_notes` 中描述：
-
-```json
-{
-  "additional_notes": "退款率 = 退款金额 / GMV，需要在指标中用 CASE WHEN 过滤已退款订单"
-}
+```
+user_input.enable_sql_test  >  --no-sql-test 或 自然语言关键词  >  config.json sql_validation
 ```
 
-### Q4: SQL 试跑失败怎么办？
+#### LLM 凭证（3 层）
 
-Pipeline 会自动重试（最多3次），如果仍失败：
-- 检查字段类型是否正确
-- 确认 JOIN 条件是否正确
-- 查看 `agent_outputs/2.semantic_model.json` 中的错误信息
-
-### Q5: 生成的图表类型不满意怎么办？
-
-在 `additional_notes` 中指定：
-
-```json
-{
-  "additional_notes": "趋势用折线图，分布用饼图，对比用柱状图"
-}
+```
+config.json llm.api_key  >  HUNYUAN_API_KEY  >  DEEPSEEK_API_KEY
 ```
 
-### Q6: 如何局部重新生成？
+每一层都是「能覆盖低层」，不是「强制开启」。
 
-在方案确认页面点击具体确认项，Pipeline 会智能判断从哪个 Agent 重新开始：
-- 指标口径相关 → 从语义模型开始
-- 图表布局相关 → 从看板指令开始
+### 退出编排服务
 
----
+- **一次 `Ctrl+C`**：触发清理钩子（把进度卡片标为「已中止」，向群里发提示），然后 `sys.exit(0)`
+- 终端如果没立即回到提示符 → **再按一次 `Ctrl+C`** 强行退出
 
-## 最佳实践
+> 已知现象：lark SDK 内部启的非 daemon 线程会拖住进程一段时间。详见 [docs/迭代记录_2026-05-18.md](docs/迭代记录_2026-05-18.md)「已知问题」。
 
-### 1. 输入越详细，输出越准确
+### 默认行为切换
 
-推荐提供：
-- ✅ 完整的 `field_descriptions`（消除歧义）
-- ✅ 明确的 `join_hints`（避免关联错误）
-- ✅ 具体的 `additional_notes`（特殊需求说明）
+如果想让默认就是「推送+试跑」模式，改 [scripts/config.json](scripts/config.json)：
 
-### 2. 逐步确认，不贪多
+```json
+"bi_platform": { "enabled": "publish", ... },
+"sql_validation": true
+```
 
-建议：
-- 先生成一个简单版本
-- 确认核心指标口径
-- 再扩展图表和维度
-
-### 3. 利用中间产物
-
-每个 Agent 的输出都可以单独使用：
-- 语义模型 SQL → 直接在数据平台执行
-- 图表设计配置 → 手动在 BI 平台配置
-- 看板指令 JSON → 后续 API 自动搭建
+之后用户不说"推送/试跑"也会走严谨路径。
 
 ---
 
 ## 更新日志
 
-| 版本 | 日期 | 更新内容 |
-|------|------|----------|
-| v1.1 | 2026-05-12 | BI 推送模式自动切换：新增 --mode 参数、自然语言关键词检测、config.json bi_platform.enabled 开关 |
-| v1.1.1 | 2026-05-12 | SQL 校验开关独立解耦：新增 --no-sql-test 参数、自然语言关键词检测、config.json sql_validation 开关 |
-| v1.0 | 2026-05-12 | 初始版本，支持 6 Agent 流水线 |
+| 日期 | 内容 |
+|---|---|
+| 2026-05-18 | SQL 试跑错误注入修复（拿到真实 Spark 报错） / close API 修复（消 404 噪音） / 飞书需求回显扩到 500 字 / 新增 `check_cookie.py` Cookie 健检工具 / 用户文档全量重写。详见 [docs/迭代记录_2026-05-18.md](docs/迭代记录_2026-05-18.md) |
+| 2026-05-15 | BI 编辑助手直连建图（自动搭看板，9 endpoint 逆向） / 飞书 Agent 集成 / 语义模型 Prompt v0.7（Spark SQL 方言 + 嵌套反模式 + column_types 注入） / SQL 失败诊断转储。详见 [docs/迭代记录_2026-05-15.md](docs/迭代记录_2026-05-15.md) |
+| 2026-05-14 | 飞书机器人 lark long connection 接入 / 6-Agent pipeline 完整 / 错误信息业务化。详见 [docs/迭代记录_2026-05-14.md](docs/迭代记录_2026-05-14.md) |
+| v1.1.1 / 2026-05-12 | SQL 校验开关独立解耦（`--no-sql-test` / 关键词 / `config.sql_validation`） |
+| v1.1 / 2026-05-12 | BI 推送模式自动切换（`--mode` / `bi_config` / 关键词 / `config.bi_platform.enabled`） |
+| v1.0 / 2026-05-12 | 初始版本，支持 6-Agent 流水线 |

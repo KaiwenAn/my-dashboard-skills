@@ -969,7 +969,22 @@ def run_pipeline_in_process(chat_id: str, natural_input: str, output_dir: str, m
 
     # ---- 准备用户输入 ----
     print(f"[PIPELINE] 准备输入...")
-    user_input = _prepare_user_input(natural_input, mode)
+    try:
+        user_input = _prepare_user_input(natural_input, mode)
+    except Exception as e:
+        # 主要场景：NLConverter 检测到用户提到的表不存在 → TableNotFoundError
+        # 直接返回结构化失败结果，让 humanize_pipeline_error 把 "Table or view not found"
+        # 翻成对用户友好的提示（"找不到数据表 xxx_typo" + 排查建议）
+        print(f"[PIPELINE] 准备输入失败: {e}")
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "failed_step": "requirements_parser",  # 走需求解析阶段的失败模板
+            "solution_md": "",
+            "solution_html_path": "",
+            "output_dir": output_dir,
+        }
 
     # ---- 确定 RunMode ----
     run_mode = RunMode.PUBLISH if user_input.get("bi_config") else RunMode.PLAN
@@ -1028,7 +1043,19 @@ def run_pipeline_in_process(chat_id: str, natural_input: str, output_dir: str, m
                     "agent": agent_name,
                     "duration_ms": duration_ms,
                 })
-                progress_info["step_index"] = step_index + 1  # 下一步
+                next_index = step_index + 1
+                progress_info["step_index"] = next_index
+
+                # 把"正在执行"提前切到下一步——否则下一次 step_start 触发前，
+                # 卡片会把刚完成的步骤当作"正在执行"显示（与"已完成"列表自相矛盾）
+                if next_index < len(PIPELINE_ORDER):
+                    next_agent = PIPELINE_ORDER[next_index]
+                    progress_info["current_agent"] = next_agent
+                    progress_info["current_display"] = AGENT_DISPLAY_NAMES.get(next_agent, next_agent)
+                else:
+                    # 已经是最后一步——清空"正在执行"，渲染层会自动隐藏该行
+                    progress_info["current_agent"] = None
+                    progress_info["current_display"] = None
 
                 display_name = AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
                 duration_s = duration_ms / 1000
@@ -1358,7 +1385,8 @@ def handle_dashboard_request_sync(chat_id: str, text: str):
 
     try:
         # 先回复确认
-        reply_text_sync(chat_id, f"收到！正在生成看板方案...\n\n需求：{text[:100]}\n\n我会实时推送进度，请稍候 ⏳")
+        echo_text = text if len(text) <= 500 else text[:500] + "..."
+        reply_text_sync(chat_id, f"收到！正在生成看板方案...\n\n需求：{echo_text}\n\n我会实时推送进度，请稍候 ⏳")
 
         # 执行 pipeline（进程内调用，带进度推送）
         # mode="auto"：让 NLConverter 提取的 mode_hint 和 config.bi_platform.enabled 生效

@@ -558,15 +558,37 @@ def _render_instruction_section(text: str) -> str:
             info_items += f'<span class="info-tag">{escape(key)}：{escape(str(data[key]))}</span>'
     info_items += f'<span class="info-tag primary">标题：{title}</span>'
 
+    # 顶层语义模型（所有图表共享，instruction-generator 输出在 data.semantic_model）
+    sm_obj = data.get('semantic_model') or {}
+    sm_name = sm_obj.get('name') or '-'
+    if sm_obj.get('id'):
+        sm_label = f"{sm_name} (ID: {sm_obj['id']})"
+    else:
+        sm_label = sm_name
+
+    def _field_label(item):
+        """从 dimensions[] / metrics[] 取展示名：优先 alias，回落 field"""
+        if isinstance(item, dict):
+            return item.get('alias') or item.get('field') or ''
+        return str(item) if item is not None else ''
+
     # 图表配置
     charts_html = ""
     charts = data.get('charts', [])
     for i, chart in enumerate(charts, 1):
         chart_title = escape(chart.get('title', f'图表{i}'))
-        chart_type = escape(chart.get('type', '-'))
-        semantic_model = escape(chart.get('semantic_model', '-'))
-        x_field = escape(chart.get('x_field', '-'))
-        y_field = escape(chart.get('y_field', '-'))
+        # 字段名是 chart_type，旧代码读 'type' 找不到所以一直显示 '-'
+        chart_type = escape(chart.get('chart_type') or chart.get('type') or '-')
+        # 单图也允许覆盖顶层 sm（罕见但兼容）
+        semantic_model = escape(chart.get('semantic_model') or sm_label)
+
+        # 维度 / 指标：从结构化数组里提
+        dims = chart.get('dimensions') or []
+        mets = chart.get('metrics') or []
+        dim_text = ' / '.join(filter(None, [_field_label(d) for d in dims])) or '-'
+        met_text = ' / '.join(filter(None, [_field_label(m) for m in mets])) or '-'
+        dim_field = escape(dim_text)
+        met_field = escape(met_text)
 
         # 量纲/格式
         extra = ""
@@ -587,8 +609,8 @@ def _render_instruction_section(text: str) -> str:
           </div>
           <div class="chart-body">
             <div class="chart-row"><span class="chart-label">语义模型</span><span class="chart-value">{semantic_model}</span></div>
-            <div class="chart-row"><span class="chart-label">X轴字段</span><span class="chart-value">{x_field}</span></div>
-            <div class="chart-row"><span class="chart-label">Y轴字段</span><span class="chart-value">{y_field}</span></div>
+            <div class="chart-row"><span class="chart-label">维度</span><span class="chart-value">{dim_field}</span></div>
+            <div class="chart-row"><span class="chart-label">指标</span><span class="chart-value">{met_field}</span></div>
             {extra}
           </div>
         </div>"""

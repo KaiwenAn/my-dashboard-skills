@@ -53,13 +53,40 @@ PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts"
 
 
 def load_prompt(agent_name: str) -> str:
-    """加载指定 Agent 的 System Prompt 文件"""
+    """
+    加载指定 Agent 的 System Prompt 文件，并对模板占位符做替换。
+
+    支持的占位符（来自单一事实源 src/chart_catalog.py，BI 平台图表清单变更只改那一处）：
+      {{chart_catalog}}      → 图表类型完整目录（中文名 + 用途 + 简介，markdown 表格）
+      {{chart_type_enum}}    → 中文名 pipe 分隔枚举（用于 prompt 内 JSON schema 示例）
+      {{chart_type_mapping}} → 中文名 → 英文 ID 映射表（instruction_generator 翻译用）
+    """
     prompt_filename = AGENT_PROMPT_FILES.get(agent_name, agent_name)
     prompt_file = os.path.join(PROMPTS_DIR, f"{prompt_filename}.md")
     if not os.path.exists(prompt_file):
         raise FileNotFoundError(f"找不到 System Prompt 文件：{prompt_file}")
     with open(prompt_file, "r", encoding="utf-8") as f:
-        return f.read()
+        prompt = f.read()
+
+    # 占位符替换。chart_catalog 用延迟 import 避免顶层循环依赖
+    if "{{chart_catalog}}" in prompt or "{{chart_type_enum}}" in prompt or "{{chart_type_mapping}}" in prompt:
+        try:
+            from src.chart_catalog import (
+                render_for_design_prompt,
+                render_chart_type_enum,
+                render_mapping_for_instruction_prompt,
+            )
+        except ImportError:
+            from chart_catalog import (  # 兜底：当 src 未在 sys.path 上时
+                render_for_design_prompt,
+                render_chart_type_enum,
+                render_mapping_for_instruction_prompt,
+            )
+        prompt = prompt.replace("{{chart_catalog}}", render_for_design_prompt())
+        prompt = prompt.replace("{{chart_type_enum}}", render_chart_type_enum())
+        prompt = prompt.replace("{{chart_type_mapping}}", render_mapping_for_instruction_prompt())
+
+    return prompt
 
 
 class BaseAgent:
@@ -344,7 +371,7 @@ class SemanticModelAgent(BaseAgent):
 
         # 懒加载 data_platform_api
         try:
-            from data_platform_api import DataPlatformClient, SQLExecutionError
+            from src.data_platform_api import DataPlatformClient, SQLExecutionError
         except ImportError:
             logger.warning("未找到 data_platform_api 模块，跳过试跑")
             return super().run(context)
@@ -488,6 +515,12 @@ class SemanticModelAgent(BaseAgent):
             client: DataPlatformClient实例
             context: Pipeline context，会被直接修改
         """
+        # 延迟 import 避免循环依赖；TableNotFoundError 用于 fail-fast 处理表不存在场景
+        try:
+            from src.data_platform_api import TableNotFoundError
+        except ImportError:  # pragma: no cover
+            TableNotFoundError = None  # type: ignore[assignment]
+
         user_input = context.get("user_input", {})
         data_sources = user_input.get("data_sources", [])
 
@@ -496,6 +529,7 @@ class SemanticModelAgent(BaseAgent):
             return
 
         column_types = {}
+        invalid_tables: list[str] = []
 
         for ds in data_sources:
             table_name = ds.get("table_name", "")
@@ -542,7 +576,20 @@ class SemanticModelAgent(BaseAgent):
                     logger.warning(f"表 [{table_name}] 字段获取失败")
 
             except Exception as e:
+                # 表不存在 → 收集起来，循环结束后一并 fail-fast；其他错误沿用旧行为只 warning
+                if TableNotFoundError is not None and isinstance(e, TableNotFoundError):
+                    logger.warning(f"表 [{table_name}] 不存在")
+                    invalid_tables.append(table_name)
+                    continue
                 logger.warning(f"获取表 [{table_name}] 字段失败：{e}")
+
+        # JSON 直传或 NL Converter 之外的入口绕过了前置校验时的兜底：
+        # 表不存在直接终止 pipeline，避免 LLM 用脑补字段写出永远跑不过的 SQL
+        if invalid_tables and TableNotFoundError is not None:
+            raise TableNotFoundError(
+                ", ".join(invalid_tables),
+                f"Table or view not found: {', '.join(invalid_tables)}",
+            )
 
         # 将 column_types 注入到 context 中，供语义模型 Agent 使用
         if column_types:
@@ -809,11 +856,39 @@ class ChartDesignAgent(BaseAgent):
             raise ValueError("图表设计输出至少需要 1 个图表")
         if "global_filters" not in output or len(output["global_filters"]) < 1:
             raise ValueError("图表设计输出至少需要 1 个全局筛选器")
+
+        # chart_type 白名单校验：必须是 BI 平台 21 种支持的图表类型之一
+        # 历史别名（如"指标卡片"、"柱状图"、"环形图"等）会被自动规范化为合法名字，
+        # 真不在白名单的会直接 raise → 触发 pipeline 重试，把错误反馈给 LLM
+        try:
+            from src.chart_catalog import normalize_chart_type, SUPPORTED_CHINESE_NAMES
+        except ImportError:
+            from chart_catalog import normalize_chart_type, SUPPORTED_CHINESE_NAMES  # type: ignore
+
+        invalid_types: list[tuple[str, str]] = []  # [(chart_id, raw_chart_type)]
         for chart in output["chart_list"]:
+            chart_id = chart.get("chart_id", "?")
             if "semantic_model" not in chart:
-                raise ValueError(f"图表 '{chart.get('chart_id', '?')}' 缺少 semantic_model 关联")
+                raise ValueError(f"图表 '{chart_id}' 缺少 semantic_model 关联")
             if "layout" not in chart:
-                raise ValueError(f"图表 '{chart.get('chart_id', '?')}' 缺少 layout 配置")
+                raise ValueError(f"图表 '{chart_id}' 缺少 layout 配置")
+
+            raw_type = (chart.get("chart_type") or "").strip()
+            canonical = normalize_chart_type(raw_type)
+            if canonical is None:
+                invalid_types.append((chart_id, raw_type))
+            elif canonical != raw_type:
+                # 是历史别名（如"指标卡片"），就地规范化，并在日志里留个痕
+                logger.info(f"图表 '{chart_id}' chart_type 规范化：{raw_type!r} → {canonical!r}")
+                chart["chart_type"] = canonical
+
+        if invalid_types:
+            details = "; ".join(f"chart_id={cid} chart_type={t!r}" for cid, t in invalid_types)
+            allowed = "、".join(sorted(SUPPORTED_CHINESE_NAMES))
+            raise ValueError(
+                f"以下图表的 chart_type 不在 BI 平台支持范围内：{details}。"
+                f"必须从 21 种之一中选：{allowed}"
+            )
 
 
 class InstructionGeneratorAgent(BaseAgent):

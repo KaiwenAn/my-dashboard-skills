@@ -206,10 +206,13 @@ def render_natural_language_instruction(instruction_output: dict) -> str:
     输出示例：
       看板标题：销售分析看板
       语义模型：销售分析（ID: model_12345）
+      筛选器：月份、产品线
       图表：
         - 月度签单金额 — 条形图，按 sign_amount 降序展示 Top10
         ...
-      筛选器：月份、产品线
+      布局（12 列网格）：
+        - 月度签单金额：行 1 列 1，宽 6 高 4
+        ...
     """
     parts: list[str] = []
 
@@ -223,6 +226,11 @@ def render_natural_language_instruction(instruction_output: dict) -> str:
         parts.append(f"语义模型：{sm_name}（ID: {sm_id}）")
     elif sm_name:
         parts.append(f"语义模型：{sm_name}")
+
+    filters = instruction_output.get("filters") or []
+    if filters:
+        names = "、".join(f.get("title") or f.get("field") or "" for f in filters)
+        parts.append(f"筛选器：{names}")
 
     charts = instruction_output.get("charts") or []
     if charts:
@@ -257,10 +265,54 @@ def render_natural_language_instruction(instruction_output: dict) -> str:
                 line += f"，{extras_str}"
             parts.append(line)
 
-    filters = instruction_output.get("filters") or []
-    if filters:
-        names = "、".join(f.get("title") or f.get("field") or "" for f in filters)
-        parts.append(f"筛选器：{names}")
+    # 布局：把每个图表的位置 / 大小告诉编辑助手，避免它按图表数量自动猜放置
+    #
+    # ⚠️ instruction_generator 的输出里两套坐标并存：
+    #   - chart.position：{row, col, width, height} —— 全部是网格单位（1-indexed）
+    #   - layout.charts[]：{x, y, w, h} —— x/y 是像素（(col-1)*row_height），w/h 才是网格跨度
+    # 后者单位不一致（位置像素+尺寸网格），输出会出现"列 241、列 481"这种像素值，
+    # 既迷惑用户也容易让编辑助手 LLM 误判。所以优先取 chart.position（全网格），
+    # 实在没有再回落到 layout.charts[]。
+    layout = instruction_output.get("layout") or {}
+    layout_charts_raw = layout.get("charts") or []
+    row_height = int(layout.get("row_height") or 80)
+    total_cols = layout.get("columns")
+
+    layout_lines: list[str] = []
+    if charts and any(c.get("position") for c in charts):
+        # 优先：每张图自带的 position（全网格单位）
+        for c in charts:
+            pos = c.get("position") or {}
+            if not pos:
+                continue
+            title = c.get("title") or c.get("chart_id") or "未命名图表"
+            row = int(pos.get("row", 1) or 1)
+            col = int(pos.get("col", 1) or 1)
+            w = int(pos.get("width", 1) or 1)
+            h = int(pos.get("height", 1) or 1)
+            layout_lines.append(f"  - {title}：行 {row} 列 {col}，宽 {w} 高 {h}")
+    elif layout_charts_raw:
+        # 回落：layout.charts[]，把像素 x/y 反推回网格 col/row
+        chart_title_map = {
+            c.get("chart_id"): (c.get("title") or c.get("chart_id") or "未命名图表")
+            for c in charts
+        }
+        for lc in layout_charts_raw:
+            cid = lc.get("chart_id", "?")
+            title = chart_title_map.get(cid, cid)
+            x_px = int(lc.get("x", 0) or 0)
+            y_px = int(lc.get("y", 0) or 0)
+            w = int(lc.get("w", 1) or 1)
+            h = int(lc.get("h", 1) or 1)
+            # 像素 → 网格：col = x_px / row_height + 1（row_height 同时被用作列宽单位）
+            col = x_px // row_height + 1 if row_height else x_px + 1
+            row = y_px // row_height + 1 if row_height else y_px + 1
+            layout_lines.append(f"  - {title}：行 {row} 列 {col}，宽 {w} 高 {h}")
+
+    if layout_lines:
+        header = f"布局（{total_cols} 列网格）：" if total_cols else "布局："
+        parts.append(header)
+        parts.extend(layout_lines)
 
     # 不附加 summary：它由上游 instruction-generator-agent 让 LLM 自己写,
     # 实测内容会与上述结构化部分重叠 80%+（标题、图表列表都重复一遍),

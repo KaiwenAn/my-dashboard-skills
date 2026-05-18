@@ -153,25 +153,13 @@
 | `filter_id/field_name/filter_type/default_value` | `filters[]` | 直接复制 |
 | `interaction.link_to` | `filters[].linked_charts` | 转换为联动关系 |
 
-### 图表类型映射
+### 图表类型映射（中文 → 英文 ID）
 
-直接沿用图表设计的 `chart_type`，不做转换：
+把上游 chart_type（中文名）翻译成英文 ID 写入指令输出。**只允许使用下表里的中文名作为来源**，
+任何其他中文名（含历史别名「指标卡片/柱状图/数据表格/指标趋势图/环形图/堆叠柱状图/面积图」等）
+都视为错误，必须在指令输出前规范化为下表中的合法名字。
 
-| 原类型 | 映射后 |
-|-------|-------|
-| 指标卡片 | metric_card |
-| 指标趋势图 | metric_trend |
-| 折线图 | line |
-| 面积图 | area |
-| 柱状图 | bar |
-| 堆叠柱状图 | stacked_bar |
-| 条形图 | horizontal_bar |
-| 饼图 | pie |
-| 环形图 | donut |
-| 散点图 | scatter |
-| 地图 | map |
-| 漏斗图 | funnel |
-| 数据表格 | table |
+{{chart_type_mapping}}
 
 ### 布局转换公式
 
@@ -270,7 +258,7 @@ layout.h = row_span
     {
       "chart_id": "chart_01",
       "chart_name": "GMV",
-      "chart_type": "指标趋势图",
+      "chart_type": "指标趋势卡",
       "semantic_model": "dm_daily_sales",
       "dimensions": [{"field_name": "pay_date", "role": "x轴"}],
       "metrics": [{"field_name": "gmv", "role": "主值", "format": "¥#,##0"}],
@@ -409,7 +397,7 @@ layout.h = row_span
       }
     ]
   },
-  "summary": "**看板标题**：dm_daily_sales看板\n**语义模型**：dm_daily_sales（ID: model_12345）\n**图表**：\n  - 1. GMV — 指标趋势图，附带日期维度\n  - 2. 各类目GMV排名 — 条形图，按GMV降序展示Top10\n**筛选器**：日期筛选器，联动所有图表"
+  "summary": "**看板标题**：dm_daily_sales看板\n**语义模型**：dm_daily_sales（ID: model_12345）\n**图表**：\n  - 1. GMV — 指标趋势卡，附带日期维度\n  - 2. 各类目GMV排名 — 条形图，按GMV降序展示Top10\n**筛选器**：日期筛选器，联动所有图表"
 }
 ```
 

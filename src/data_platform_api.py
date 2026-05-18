@@ -3,6 +3,7 @@
 封装数据平台SQL查询相关HTTP接口，提供简化的Python调用方式
 """
 import json
+import re
 import time
 import requests
 from typing import Optional, Dict, List, Any
@@ -24,6 +25,38 @@ class AuthenticationError(DataPlatformError):
 class SQLExecutionError(DataPlatformError):
     """SQL执行异常 (4007406)"""
     pass
+
+
+class TableNotFoundError(SQLExecutionError):
+    """表不存在 — describe / 引用了不存在的表时抛出，调用方应让用户重新提供表名而非继续 LLM 脑补"""
+
+    def __init__(self, table_name: str, raw_error: str = ""):
+        self.table_name = table_name
+        self.raw_error = raw_error
+        # 注意：消息里保留 Spark 原始报错（"Table or view not found: xxx"），
+        # 让上层 humanize_pipeline_error 的正则能匹配到
+        msg = raw_error or f"Table or view not found: {table_name}"
+        super().__init__("TABLE_NOT_FOUND", msg)
+
+
+# 触发 TableNotFoundError 的 Spark 报错关键词（小写后判断）
+_TABLE_NOT_FOUND_PATTERNS = (
+    "table or view not found",
+    "table_or_view_not_found",
+    "no such table",
+    "doesn't exist",
+    "does not exist",
+    "no such database",
+    "schema_not_found",
+)
+
+
+def _is_table_not_found(error_msg: str) -> bool:
+    """Spark / 数据平台返回的错误描述里是否表明'表不存在'"""
+    if not error_msg:
+        return False
+    msg = error_msg.lower()
+    return any(kw in msg for kw in _TABLE_NOT_FOUND_PATTERNS)
 
 
 class ConnectionError(DataPlatformError):
@@ -272,12 +305,24 @@ class DataPlatformClient:
                 return status_data
             elif state == "ERROR":
                 error_code = status_data.get("errorCode", "UNKNOWN")
-                error_msg = status_data.get("errorMsg", "SQL执行失败")
-                # 尝试更多可能的错误字段名
-                if error_msg == "SQL执行失败":
-                    error_msg = status_data.get("error", status_data.get("errMsg", error_msg))
+                # 数据平台真实字段是 simpleExceptionMsg / exceptionMsg；
+                # errorMsg/error/errMsg 是历史 fallback。优先用更精简的版本。
+                raw_msg = (
+                    status_data.get("simpleExceptionMsg")
+                    or status_data.get("exceptionMsg")
+                    or status_data.get("errorMsg")
+                    or status_data.get("error")
+                    or status_data.get("errMsg")
+                    or "SQL执行失败"
+                )
+                # 部分错误类型的 exceptionMsg 会带 <div>/<p>/<font> HTML 包装 + 中文翻译；
+                # 也会附一段 Spark logical plan 尾巴。统一剥 HTML + 截断 800 字。
+                cleaned = re.sub(r"<[^>]+>", "", raw_msg).strip()
+                error_msg = cleaned[:800] + ("..." if len(cleaned) > 800 else "")
                 print(f"[DEBUG] SQL执行失败: errorCode={error_code}, errorMsg={error_msg}")
                 print(f"[DEBUG] 完整status_data keys: {list(status_data.keys())}")
+                print(f"[DEBUG] simpleExceptionMsg = {status_data.get('simpleExceptionMsg')!r}")
+                print(f"[DEBUG] exceptionMsg (前500字) = {(status_data.get('exceptionMsg') or '')[:500]!r}")
                 raise SQLExecutionError(error_code, error_msg)
             elif state == "TIMEOUT":
                 raise DataPlatformError("TIMEOUT", "查询超时")
@@ -433,12 +478,13 @@ class DataPlatformClient:
             ConnectionError: 网络连接异常（非致命，仅记录日志）
         """
         url = f"{self.base_url}/olap/api/v2/statement/close"
-        payload = {"queryId": query_id}
-        
+
         try:
+            # queryId 必须作为 URL 参数传递（参考官方 HTTP API 文档），
+            # 不能放在 JSON body 中——否则数据平台返回 404
             resp = self.session.post(
                 url,
-                json=payload,
+                params={"queryId": query_id},
                 headers=self._get_headers(),
                 timeout=10
             )
@@ -520,7 +566,15 @@ class DataPlatformClient:
                     return columns
             
             return []
-            
+
+        except SQLExecutionError as e:
+            # 区分"表不存在"和其他 SQL 错误：
+            # 表不存在 → 抛 TableNotFoundError，让调用方 fail-fast，避免 LLM 用脑补字段继续跑
+            # 其他错误（权限、引擎挂等）→ 沿用旧行为返回 [] 让上层走兜底
+            if _is_table_not_found(e.message or ""):
+                raise TableNotFoundError(table_name, e.message)
+            print(f"[WARN] describe_table 失败: {e}")
+            return []
         except Exception as e:
             print(f"[WARN] describe_table 失败: {e}")
             return []
